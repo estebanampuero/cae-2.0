@@ -51,7 +51,15 @@
 
     <div id="main-content" style="display: none;" class="container mx-auto p-4 md:p-6 lg:p-8 max-w-7xl pb-24 sm:pb-8">
         
-        <header class="mb-8"><h1 class="text-2xl sm:text-3xl font-bold text-slate-800">Agendar y Gestionar Horas</h1><p class="text-slate-500 mt-1">Selecciona, reserva o elimina bloques horarios.</p></header>
+        <header class="mb-8 flex justify-between items-center">
+    <div>
+        <h1 class="text-2xl sm:text-3xl font-bold text-slate-800">Agendar y Gestionar Horas</h1>
+        <p class="text-slate-500 mt-1">Selecciona, reserva o elimina bloques horarios.</p>
+    </div>
+    <button id="logout-btn" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+        Cerrar Sesión
+    </button>
+</header>
         
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 p-4 sm:p-6 bg-white rounded-lg shadow-md">
             <div><label for="cae-select" class="block text-sm font-medium text-slate-600 mb-1">CAE</label><select id="cae-select" class="w-full p-2 border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"><option value="">Cargando...</option></select></div>
@@ -73,15 +81,22 @@
 
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const USERS = { "admin": "clave123", "usuario1": "pass456" };
         const loginOverlay = document.getElementById('login-overlay');
         const mainContent = document.getElementById('main-content');
+        
+        if (localStorage.getItem('isLoggedIn') === 'true') {
+            loginOverlay.style.display = 'none';
+            mainContent.style.display = 'block';
+            init(); // Llamamos a init directamente para que todo cargue
+        }
+        const USERS = { "admin": "clave123", "usuario1": "pass456" };
         const loginForm = document.getElementById('login-form');
         loginForm.addEventListener('submit', (e) => {
             e.preventDefault();
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
             if (USERS[username] && USERS[username] === password) {
+                localStorage.setItem('isLoggedIn', 'true');
                 loginOverlay.style.display = 'none';
                 mainContent.style.display = 'block';
                 init();
