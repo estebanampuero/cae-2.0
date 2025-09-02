@@ -122,6 +122,7 @@
         let selectedBoxForReservation = null;
         let allOccupiedSlots = new Map();
 
+        const delay = ms => new Promise(res => setTimeout(res, ms));
         const init = async () => {
             timeSlotsContainer.style.display = 'none';
             await loadAndPopulateFilters();
@@ -441,6 +442,8 @@
                 // Limpiamos la selección actual
                 selectedTimeSlots.clear();
                 selectedBoxForReservation = null;
+
+                await delay(2000);
 
                 // Actualizamos la vista de horarios para reflejar la nueva reserva
                 await fetchAllBoxAvailabilities();
