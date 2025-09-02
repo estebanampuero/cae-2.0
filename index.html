@@ -435,8 +435,16 @@
             try {
                 const response = await fetch(API_RESERVAS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!response.ok) throw new Error(`El servidor respondió con ${response.status}`);
+                
                 showToast('¡Reserva realizada con éxito!', 'success');
-                resetForm();
+
+                // Limpiamos la selección actual
+                selectedTimeSlots.clear();
+                selectedBoxForReservation = null;
+
+                // Actualizamos la vista de horarios para reflejar la nueva reserva
+                await fetchAllBoxAvailabilities();
+
             } catch (error) {
                 console.error('Error al enviar la reserva:', error);
                 showToast('Error al enviar la reserva. Intenta de nuevo.', 'error');
