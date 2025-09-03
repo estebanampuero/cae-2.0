@@ -338,6 +338,11 @@
                 }
             });
             reservarBtn.addEventListener('click', handleReserveClick);
+            const logoutBtn = document.getElementById('logout-btn');
+            logoutBtn.addEventListener('click', () => {
+                localStorage.removeItem('isLoggedIn'); // Borramos la bandera
+                location.reload(); // Recargamos la página para mostrar el login
+            });
         };
         
         const handleDayClick = async (e) => {
