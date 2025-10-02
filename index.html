@@ -201,12 +201,15 @@
 
         const loadAndPopulateFilters = async () => {
             try {
+                // CAMBIO 1: Asegurarse de que la hoja de médicos también cargue la columna 'cae'
                 [configData, medicosList] = await Promise.all([
                     fetchSheetData(URL_CONFIG, ['cae', 'box', 'calendar_id']),
-                    fetchSheetData(URL_MEDICOS, ['medico'])
+                    fetchSheetData(URL_MEDICOS, ['medico', 'cae']) 
                 ]);
                 populateCaeSelect();
-                populateMedicoSelect();
+                // CAMBIO 2: Inicializar el select de médicos deshabilitado, ya que ningún CAE está seleccionado aún.
+                medicoSelect.innerHTML = '<option value="">Selecciona un CAE primero</option>';
+                medicoSelect.disabled = true;
                 showToast('Datos cargados correctamente.', 'success');
             } catch (error) {
                 console.error('Error al cargar datos:', error);
@@ -223,6 +226,45 @@
                 option.textContent = cae;
                 caeSelect.appendChild(option);
             });
+        };
+        
+        // CAMBIO 3: Nueva función para filtrar y popular la lista de médicos.
+        const updateMedicoSelect = () => {
+            const selectedCae = caeSelect.value;
+            medicoSelect.innerHTML = ''; // Limpiar opciones anteriores
+            otroMedicoInput.classList.add('hidden');
+            medicoSelect.value = '';
+
+            if (selectedCae) {
+                medicoSelect.innerHTML = '<option value="">Selecciona un Médico</option>';
+                
+                // Filtrar la lista completa de médicos por el CAE seleccionado
+                const medicosForCae = medicosList
+                    .filter(item => String(item.cae).trim() === selectedCae.trim())
+                    .map(item => item.medico);
+                
+                // Obtener una lista de médicos únicos y ordenarla
+                const uniqueMedicos = [...new Set(medicosForCae)].sort();
+
+                uniqueMedicos.forEach(medico => {
+                    const option = document.createElement('option');
+                    option.value = medico;
+                    option.textContent = medico;
+                    medicoSelect.appendChild(option);
+                });
+                
+                // Añadir la opción "Otro" al final
+                const otroOption = document.createElement("option");
+                otroOption.value = "otro";
+                otroOption.textContent = "Otro / Agregar médico...";
+                medicoSelect.appendChild(otroOption);
+
+                medicoSelect.disabled = false;
+            } else {
+                // Si no se selecciona un CAE, mantener el select de médicos deshabilitado
+                medicoSelect.innerHTML = '<option value="">Selecciona un CAE primero</option>';
+                medicoSelect.disabled = true;
+            }
         };
 
         const updateBoxSelect = () => {
@@ -385,7 +427,13 @@
         };
 
         const setupEventListeners = () => {
-            caeSelect.addEventListener('change', () => { updateBoxSelect(); if (selectedDate) fetchAllBoxAvailabilities(); else { timeSlotsContainer.style.display = 'none'; selectedTimeSlots.clear(); selectedBoxForReservation = null; } });
+            // CAMBIO 4: Modificar el listener del CAE para que llame a las funciones de actualización de BOX y de MÉDICO.
+            caeSelect.addEventListener('change', () => { 
+                updateBoxSelect(); 
+                updateMedicoSelect(); // <-- Llamada a la nueva función de filtrado
+                if (selectedDate) fetchAllBoxAvailabilities(); 
+                else { timeSlotsContainer.style.display = 'none'; selectedTimeSlots.clear(); selectedBoxForReservation = null; } 
+            });
             boxSelect.addEventListener('change', filterBoxView);
             medicoSelect.addEventListener('change', () => { otroMedicoInput.classList.toggle('hidden', medicoSelect.value !== 'otro'); });
             const changeMonth = (offset) => { currentDate.setMonth(currentDate.getMonth() + offset); renderCalendar(); timeSlotsContainer.style.display = 'none'; selectedDate = null; };
@@ -547,7 +595,7 @@
 
         const showToast=(e,t="info")=>{toastMessageEl.textContent=e;const o=window.innerWidth<640,n=o?"translateX(100%)":"translateX(120%)";toastEl.classList.remove("bg-green-500","bg-red-500","bg-blue-500"),o?(toastEl.classList.remove("translate-x-[120%]"),toastEl.classList.add("translate-x-full")):(toastEl.classList.remove("translate-x-full"),toastEl.classList.add("translate-x-[120%]"));const s={success:"bg-green-500",error:"bg-red-500",info:"bg-blue-500"};toastEl.classList.add(s[t]),toastEl.style.transform="translateX(0)",setTimeout(()=>{toastEl.style.transform=n},4e3)};
         const resetForm=()=>{caeSelect.value="",updateBoxSelect(),medicoSelect.value="",otroMedicoInput.value="",otroMedicoInput.classList.add("hidden"),selectedDate=null,selectedTimeSlots.clear(),selectedBoxForReservation=null,allOccupiedSlots.clear(),timeSlotsContainer.style.display="none",document.querySelectorAll("#calendar-grid button.day-selected").forEach(e=>e.classList.remove("day-selected"))};
-        function populateMedicoSelect(){medicoSelect.innerHTML='<option value="">Selecciona un Médico</option>',medicosList.forEach(item=>{const e=document.createElement("option");e.value=item.medico,e.textContent=item.medico,medicoSelect.appendChild(e)});const e=document.createElement("option");e.value="otro",e.textContent="Otro / Agregar médico...",medicoSelect.appendChild(e),medicoSelect.disabled=!1}
+        // CAMBIO 5: Se elimina la función `populateMedicoSelect` original ya que su lógica ahora está en `updateMedicoSelect`.
         function renderCalendar(){calendarGrid.innerHTML='<div class="font-medium text-xs text-slate-500">LU</div><div class="font-medium text-xs text-slate-500">MA</div><div class="font-medium text-xs text-slate-500">MI</div><div class="font-medium text-xs text-slate-500">JU</div><div class="font-medium text-xs text-slate-500">VI</div><div class="font-medium text-xs text-slate-500">SA</div><div class="font-medium text-xs text-slate-500">DO</div>';const e=currentDate.getFullYear(),t=currentDate.getMonth();monthYearEl.textContent=currentDate.toLocaleDateString("es-ES",{month:"long",year:"numeric"}).replace(/^\w/,e=>e.toUpperCase());const o=new Date(e,t,1),n=new Date(e,t+1,0).getDate(),s=(o.getDay()+6)%7;for(let r=0;r<s;r++)calendarGrid.appendChild(document.createElement("div"));for(let a=1;a<=n;a++){const c=document.createElement("button");c.textContent=a,c.classList.add('p-1','sm:p-2','rounded-full','hover:bg-slate-100','transition','cursor-pointer','w-full','aspect-square','flex','items-center','justify-center','mx-auto','text-sm');const i=new Date;e===i.getFullYear()&&t===i.getMonth()&&a===i.getDate()&&c.classList.add('bg-slate-200','font-bold'),c.dataset.date=new Date(e,t,a).toISOString(),calendarGrid.appendChild(c)}};
         const loginOverlay = document.getElementById('login-overlay');
         const mainContent = document.getElementById('main-content');
