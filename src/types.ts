@@ -1,46 +1,73 @@
 export interface Center {
   id: string;
   name: string;
+  orgId: string;
 }
 
 export interface Box {
   id: string;
   name: string;
   centerId: string;
+  orgId: string;
 }
 
 export interface Doctor {
   id: string;
   name: string;
-  centerId: string; // Associated center
+  centerId: string; 
+  orgId: string;
 }
 
 export interface Reservation {
   id: string;
+  orgId: string;
   centerId: string;
   boxId: string;
-  boxName: string; // Denormalized for easier display
+  boxName: string;
   doctorName: string;
-  observation?: string; // Nuevo campo
-  startTime: string; // ISO String
-  endTime: string; // ISO String
-  userId: string; // Who created it
+  observation?: string;
+  startTime: string; 
+  endTime: string; 
+  userId: string;
+  originalEventId?: string;
   createdAt: number;
+  
+  // --- NUEVOS CAMPOS SOFT DELETE ---
+  status?: 'active' | 'cancelled'; // Opcional para soportar datos viejos (undefined = active)
+  cancelledAt?: number;
 }
 
 export interface ReservationSlot {
-  time: string; // "HH:mm"
+  time: string; 
   box: string;
 }
 
 export interface OccupiedSlotInfo {
-  eventId: string; // This will now be the Firestore Document ID
-  summary: string; // Doctor name usually
-  observation?: string; // Para mostrar en el tooltip
+  eventId: string;
+  summary: string;
+  observation?: string;
+  boxId: string;
+  startIso: string;
 }
 
-// Helper for the grid availability map
 export interface BoxAvailability {
   boxName: string;
-  occupied: Record<string, OccupiedSlotInfo>; // Key is time "HH:mm"
+  occupied: Record<string, OccupiedSlotInfo>; 
+}
+
+export type UserRole = 'owner' | 'editor' | 'viewer';
+
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  orgId: string;
+  role: UserRole;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  ownerId: string;
+  createdAt: number;
 }

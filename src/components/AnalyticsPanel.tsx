@@ -38,7 +38,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
   const [endTimeFilter, setEndTimeFilter] = useState('20:00');
 
   const [isLoading, setIsLoading] = useState(false);
-  const [rawData, setRawData] = useState<Reservation[]>([]);
+  const [rawData, setRawData] = useState<Reservation[]>([]); // Contains ALL (active + cancelled)
 
   // 1. Load centers on mount
   useEffect(() => {
@@ -93,22 +93,32 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
           handleGenerateReport();
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile]); // Quitamos dependencias de filtros para que no sea automático
+  }, [userProfile]); 
 
-  // --- DATA PROCESSING ---
-  
-  const filteredData = useMemo(() => {
-      if (!rawData.length) return [];
-      return rawData.filter(r => {
+  // --- FILTRADO DE DATOS (Separando Activos y Cancelados) ---
+  const { activeData, cancelledData } = useMemo(() => {
+      const active: Reservation[] = [];
+      const cancelled: Reservation[] = [];
+      
+      rawData.forEach(r => {
           const time = getChileTime(r.startTime); 
-          return time >= startTimeFilter && time <= endTimeFilter;
+          const isInTimeRange = time >= startTimeFilter && time <= endTimeFilter;
+          
+          if (isInTimeRange) {
+              if (r.status === 'cancelled') cancelled.push(r);
+              else active.push(r); // Undefined status is considered active (legacy data)
+          }
       });
+      return { activeData: active, cancelledData: cancelled };
   }, [rawData, startTimeFilter, endTimeFilter]);
 
   // --- LOGICA DE NEGOCIO AVANZADA PARA CAPACIDAD ---
+  // Calcula exactamente cuántos bloques de 30 mins existen en el rango de fechas
+  // considerando: L-J (8-20), V (8-16), S-D (0), y la intersección con el filtro de hora usuario.
   const totalCapacityPerBox = useMemo(() => {
     let totalSlots = 0;
     
+    // Parse filters to decimal hours (e.g. "08:30" -> 8.5)
     const [startH, startM] = startTimeFilter.split(':').map(Number);
     const [endH, endM] = endTimeFilter.split(':').map(Number);
     
@@ -124,32 +134,37 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
 
     let safeGuard = 0;
     while (current <= end && safeGuard < 1000) {
-        const dayOfWeek = current.getDay(); 
+        const dayOfWeek = current.getDay(); // 0=Dom, 1=Lun, ..., 5=Vie, 6=Sab
+        
         let businessOpen = 0;
         let businessClose = 0;
 
+        // Definir horario base según reglas de negocio
         if (dayOfWeek >= 1 && dayOfWeek <= 4) {
-            // Lunes a Jueves
+            // Lunes (1) a Jueves (4): 08:00 - 20:00
             businessOpen = 8.0;
             businessClose = 20.0;
         } else if (dayOfWeek === 5) {
-            // Viernes
+            // Viernes (5): 08:00 - 16:00
             businessOpen = 8.0;
             businessClose = 16.0;
         } else {
-            // Sábado y Domingo -> 0 Horas
+            // Sábado (6) y Domingo (0): Cerrado
             businessOpen = 0;
             businessClose = 0;
         }
 
+        // Calcular intersección con el filtro del usuario
         const effectiveStart = Math.max(businessOpen, filterStartDec);
         const effectiveEnd = Math.min(businessClose, filterEndDec);
 
+        // Si hay tiempo válido, sumar slots (Asumimos bloques de 30 min -> * 2)
         if (effectiveEnd > effectiveStart) {
             const hoursAvailable = effectiveEnd - effectiveStart;
             totalSlots += Math.floor(hoursAvailable * 2);
         }
 
+        // Siguiente día
         current.setDate(current.getDate() + 1);
         safeGuard++;
     }
@@ -158,14 +173,15 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
   }, [startDate, endDate, startTimeFilter, endTimeFilter]);
 
 
-  // --- CHARTS DATA PREPARATION ---
+  // --- CHARTS DATA PREPARATION (SOLO USAN ACTIVE DATA) ---
 
   // 1. Occupancy % per Box
   const dataOccupancy = useMemo(() => {
     const usageMap: Record<string, number> = {};
     allBoxes.forEach(b => { usageMap[b.name] = 0; });
 
-    filteredData.forEach(r => {
+    // Count actual usage from filtered active data
+    activeData.forEach(r => {
         if (usageMap[r.boxName] !== undefined) {
             usageMap[r.boxName]++;
         }
@@ -173,6 +189,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
 
     return Object.entries(usageMap).map(([boxName, occupiedCount]) => {
         const capacity = totalCapacityPerBox > 0 ? totalCapacityPerBox : 1;
+        // Cap occupied at capacity
         const validOccupied = occupiedCount > capacity ? capacity : occupiedCount;
         const free = capacity - validOccupied;
         
@@ -187,7 +204,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
             freePct
         };
     }).sort((a, b) => b.occupiedPct - a.occupiedPct);
-  }, [allBoxes, filteredData, totalCapacityPerBox]);
+  }, [allBoxes, activeData, totalCapacityPerBox]);
 
 
   // 2. Line Chart Data (Timeline) - EXCLUYENDO FINES DE SEMANA
@@ -201,6 +218,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
     let loops = 0;
     while (cur <= last && loops < 365) {
         const dayOfWeek = cur.getDay();
+        // Solo agregar al mapa si NO es domingo (0) ni sábado (6)
         if (dayOfWeek !== 0 && dayOfWeek !== 6) {
             const k = cur.toISOString().split('T')[0];
             map[k] = 0;
@@ -209,7 +227,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         loops++;
     }
 
-    filteredData.forEach(r => {
+    activeData.forEach(r => {
         const day = r.startTime.split('T')[0];
         if (map[day] !== undefined) map[day]++;
     });
@@ -218,12 +236,12 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         const parts = date.split('-');
         return { date: `${parts[2]}/${parts[1]}`, reservas: map[date] };
     });
-  }, [filteredData, startDate, endDate]);
+  }, [activeData, startDate, endDate]);
 
   // 3. Pie Chart Data (Doctors)
   const dataByDoctor = useMemo(() => {
     const map: Record<string, number> = {};
-    filteredData.forEach(r => {
+    activeData.forEach(r => {
         const name = r.doctorName;
         map[name] = (map[name] || 0) + 1;
     });
@@ -231,14 +249,17 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         .map(([name, value]) => ({ name, value }))
         .sort((a, b) => b.value - a.value)
         .slice(0, 5);
-  }, [filteredData]);
+  }, [activeData]);
 
-  // KPIs
-  const totalReservations = filteredData.length;
-  const uniqueDoctors = new Set(filteredData.map(r => r.doctorName)).size;
-  const busyBox = dataOccupancy.length > 0 ? dataOccupancy[0].name : '-';
+  // --- KPIS ---
+  const totalActive = activeData.length;
+  const totalCancelled = cancelledData.length;
+  const totalAll = totalActive + totalCancelled;
   
-  // KPI: Promedio Diario (CALCULADO SOLO SOBRE DÍAS HÁBILES)
+  // Tasa de cancelación
+  const cancellationRate = totalAll > 0 ? ((totalCancelled / totalAll) * 100).toFixed(1) : '0.0';
+
+  // Días Hábiles (Para promedio diario)
   const workingDays = useMemo(() => {
       let count = 0;
       let cur = new Date(`${startDate}T00:00:00`);
@@ -249,6 +270,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
       let loops = 0;
       while (cur <= last && loops < 365) {
           const day = cur.getDay();
+          // Excluir Sabado (6) y Domingo (0)
           if (day !== 0 && day !== 6) count++;
           cur.setDate(cur.getDate() + 1);
           loops++;
@@ -256,27 +278,33 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
       return count > 0 ? count : 1;
   }, [startDate, endDate]);
 
-  const dailyAverage = (totalReservations / workingDays).toFixed(1);
+  const dailyAverage = (totalActive / workingDays).toFixed(1);
+  const uniqueDoctors = new Set(activeData.map(r => r.doctorName)).size;
+  const busyBox = dataOccupancy.length > 0 ? dataOccupancy[0].name : '-';
 
   // --- EXPORT TO EXCEL ---
   const handleExportExcel = () => {
-    if (filteredData.length === 0) {
+    if (activeData.length === 0 && cancelledData.length === 0) {
         alert("No hay datos para exportar en este rango.");
         return;
     }
 
+    // 1. Hoja de Resumen (KPIs)
     const summaryData = [
         { Metrica: "Fecha Reporte", Valor: new Date().toLocaleString('es-CL') },
         { Metrica: "Rango Inicio", Valor: startDate },
         { Metrica: "Rango Fin", Valor: endDate },
         { Metrica: "Días Hábiles en Rango", Valor: workingDays },
-        { Metrica: "Total Reservas Filtradas", Valor: totalReservations },
-        { Metrica: "Promedio Diario (Días Hábiles)", Valor: dailyAverage },
+        { Metrica: "Total Reservas Activas", Valor: totalActive },
+        { Metrica: "Total Reservas Canceladas", Valor: totalCancelled },
+        { Metrica: "Tasa Cancelación", Valor: `${cancellationRate}%` },
+        { Metrica: "Promedio Diario (Activas)", Valor: dailyAverage },
         { Metrica: "Médicos Activos", Valor: uniqueDoctors },
         { Metrica: "Box Más Usado", Valor: busyBox },
         { Metrica: "Capacidad Bloques/Box (aprox)", Valor: totalCapacityPerBox }
     ];
 
+    // 2. Hoja de Ocupación por Box
     const occupancySheetData = dataOccupancy.map(d => ({
         Box: d.name,
         'Bloques Ocupados': d.occupied,
@@ -285,7 +313,11 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         '% Disponibilidad': `${d.freePct}%`
     }));
 
-    const detailSheetData = filteredData.map(r => {
+    // 3. Hoja de Detalle de Reservas (Juntamos activas y canceladas)
+    const detailSheetData = [
+        ...activeData.map(r => ({...r, Estado: 'Activa'})),
+        ...cancelledData.map(r => ({...r, Estado: 'Cancelada'}))
+    ].map(r => {
         const dateObj = new Date(r.startTime);
         const fullDateTime = new Intl.DateTimeFormat('es-CL', {
             timeZone: 'America/Santiago',
@@ -299,6 +331,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
             Box: r.boxName,
             Profesional: r.doctorName,
             Fecha_Hora: fullDateTime,
+            Estado: r.Estado,
             Observacion: r.observation || '-',
             Usuario_Registro: r.userId
         };
@@ -311,7 +344,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
 
     const colsSummary = [{ wch: 25 }, { wch: 30 }];
     const colsOccupancy = [{ wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }];
-    const colsDetail = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 20 }, { wch: 30 }];
+    const colsDetail = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 20 }, { wch: 30 }];
 
     wsSummary['!cols'] = colsSummary;
     wsOccupancy['!cols'] = colsOccupancy;
@@ -321,7 +354,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
     XLSX.utils.book_append_sheet(wb, wsOccupancy, "Ocupación Boxes");
     XLSX.utils.book_append_sheet(wb, wsDetail, "Detalle Reservas");
 
-    XLSX.writeFile(wb, `Reporte_Gestion_CAE_${startDate}_${endDate}.xlsx`);
+    XLSX.writeFile(wb, `Reporte_Gestion_${startDate}_${endDate}.xlsx`);
   };
 
   return (
@@ -439,31 +472,30 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         <div className="flex-1 overflow-auto p-6 bg-slate-50/30 custom-scrollbar">
             
             {/* KPI Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Total Reservas</p>
-                        <h3 className="text-3xl font-bold text-indigo-600">{totalReservations}</h3>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <p className="text-sm text-slate-500 font-medium">Activas</p>
+                    <h3 className="text-2xl font-bold text-indigo-600">{totalActive}</h3>
+                </div>
+                {/* NUEVO KPI DE CANCELACIÓN */}
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <p className="text-sm text-slate-500 font-medium">Tasa Cancelación</p>
+                    <div className="flex items-end gap-2">
+                        <h3 className="text-2xl font-bold text-red-500">{cancellationRate}%</h3>
+                        <span className="text-xs text-slate-400 mb-1">({totalCancelled})</span>
                     </div>
                 </div>
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Promedio Diario</p>
-                        <h3 className="text-3xl font-bold text-blue-600">{dailyAverage}</h3>
-                        <p className="text-xs text-slate-400 mt-1">reservas / día (Hábiles)</p>
-                    </div>
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <p className="text-sm text-slate-500 font-medium">Promedio Diario</p>
+                    <h3 className="text-2xl font-bold text-blue-600">{dailyAverage}</h3>
                 </div>
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Médicos Activos</p>
-                        <h3 className="text-3xl font-bold text-violet-600">{uniqueDoctors}</h3>
-                    </div>
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <p className="text-sm text-slate-500 font-medium">Médicos</p>
+                    <h3 className="text-2xl font-bold text-violet-600">{uniqueDoctors}</h3>
                 </div>
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Box Más Ocupado</p>
-                        <h3 className="text-xl font-bold text-emerald-600 truncate max-w-[150px]">{busyBox}</h3>
-                    </div>
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <p className="text-sm text-slate-500 font-medium">Top Box</p>
+                    <h3 className="text-lg font-bold text-emerald-600 truncate">{busyBox}</h3>
                 </div>
             </div>
 
@@ -471,7 +503,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-6">
                 
                 {/* 1. CHART: Occupancy Percentage */}
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 lg:col-span-2">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 lg:col-span-2 h-[350px]">
                     <div className="flex justify-between items-start mb-2">
                         <div>
                             <h4 className="text-base font-bold text-slate-700">Porcentaje de Ocupación vs Disponibilidad</h4>
@@ -486,72 +518,62 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
                         </div>
                     </div>
                     
-                    <div className="h-[350px] w-full" style={{ minHeight: '350px' }}>
-                        {dataOccupancy.length > 0 ? (
-                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={dataOccupancy} margin={{top: 20, right: 30, left: 20, bottom: 5}}>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                    <XAxis dataKey="name" tick={{fontSize: 12}} />
-                                    <YAxis unit="%" tick={{fontSize: 12}} />
-                                    <Tooltip 
-                                        cursor={{fill: '#f8fafc'}}
-                                        formatter={(value: number, name: string) => {
-                                            return name === 'occupiedPct' 
-                                              ? [`${value}% Ocupado`, 'Ocupación'] 
-                                              : [`${value}% Libre`, 'Disponibilidad'];
-                                        }}
-                                    />
-                                    <Legend />
-                                    <Bar dataKey="occupiedPct" name="Ocupado (%)" stackId="a" fill="#6366f1" radius={[0, 0, 4, 4]} />
-                                    <Bar dataKey="freePct" name="Libre (%)" stackId="a" fill="#e2e8f0" radius={[4, 4, 0, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        ) : (
-                            <div className="h-full flex items-center justify-center text-slate-400">Seleccione filtros y presione "Generar Estadísticas"</div>
-                        )}
-                    </div>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={dataOccupancy} margin={{top: 20, right: 30, left: 20, bottom: 5}}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                            <XAxis dataKey="name" tick={{fontSize: 12}} />
+                            <YAxis unit="%" tick={{fontSize: 12}} />
+                            <Tooltip 
+                                cursor={{fill: '#f8fafc'}}
+                                formatter={(value: number, name: string) => {
+                                    return name === 'occupiedPct' 
+                                      ? [`${value}% Ocupado`, 'Ocupación'] 
+                                      : [`${value}% Libre`, 'Disponibilidad'];
+                                }}
+                            />
+                            <Legend />
+                            <Bar dataKey="occupiedPct" name="Ocupado (%)" stackId="a" fill="#6366f1" radius={[0, 0, 4, 4]} />
+                            <Bar dataKey="freePct" name="Libre (%)" stackId="a" fill="#e2e8f0" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
                 </div>
 
                 {/* 2. Line Chart */}
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-[300px]">
                     <h4 className="text-base font-bold text-slate-700 mb-6">Tendencia de Reservas (Días Hábiles)</h4>
-                    <div className="h-[300px] w-full" style={{ minHeight: '300px' }}>
-                         <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={dataTimeline}>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                <XAxis dataKey="date" stroke="#94a3b8" tick={{fontSize: 12}} />
-                                <YAxis stroke="#94a3b8" tick={{fontSize: 12}} allowDecimals={false} />
-                                <Tooltip contentStyle={{borderRadius: '8px'}} />
-                                <Line type="monotone" dataKey="reservas" stroke="#6366f1" strokeWidth={3} dot={{r: 4}} />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    </div>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={dataTimeline}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                            <XAxis dataKey="date" stroke="#94a3b8" tick={{fontSize: 12}} />
+                            <YAxis stroke="#94a3b8" tick={{fontSize: 12}} allowDecimals={false} />
+                            <Tooltip contentStyle={{borderRadius: '8px'}} />
+                            <Line type="monotone" dataKey="reservas" stroke="#6366f1" strokeWidth={3} dot={{r: 4}} />
+                        </LineChart>
+                    </ResponsiveContainer>
                 </div>
 
                 {/* 3. Pie Chart */}
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-[300px]">
                     <h4 className="text-base font-bold text-slate-700 mb-6">Top Médicos (Reservas)</h4>
-                    <div className="h-[300px] w-full" style={{ minHeight: '300px' }}>
-                        <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                                <Pie
-                                    data={dataByDoctor}
-                                    cx="50%"
-                                    cy="50%"
-                                    innerRadius={60}
-                                    outerRadius={100}
-                                    paddingAngle={5}
-                                    dataKey="value"
-                                >
-                                    {dataByDoctor.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                    ))}
-                                </Pie>
-                                <Tooltip />
-                                <Legend verticalAlign="bottom" height={36} iconType="circle" />
-                            </PieChart>
-                        </ResponsiveContainer>
-                    </div>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                            <Pie
+                                data={dataByDoctor}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={60}
+                                outerRadius={100}
+                                paddingAngle={5}
+                                dataKey="value"
+                            >
+                                {dataByDoctor.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                ))}
+                            </Pie>
+                            <Tooltip />
+                            <Legend verticalAlign="bottom" height={36} iconType="circle" />
+                        </PieChart>
+                    </ResponsiveContainer>
                 </div>
 
             </div>

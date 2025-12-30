@@ -1,6 +1,6 @@
 import { db } from '../firebase';
 import { 
-  collection, getDocs, addDoc, query, where, deleteDoc, doc, orderBy, writeBatch 
+  collection, getDocs, addDoc, query, where, deleteDoc, doc, orderBy, writeBatch, updateDoc 
 } from 'firebase/firestore';
 import { Center, Box, Doctor, Reservation, OccupiedSlotInfo } from '../types';
 import { getChileTime } from '../utils/dateUtils';
@@ -48,17 +48,24 @@ export const addDoctor = async (name: string, centerId: string, orgId: string): 
   return { id: ref.id, name, centerId, orgId };
 };
 
-// --- RESERVATIONS ---
+// --- RESERVATIONS (SOFT DELETE LOGIC) ---
+
 export const getReservationsForDate = async (orgId: string, centerId: string, date: Date): Promise<Reservation[]> => {
   if (!orgId) return [];
   const q = query(collection(db, 'reservations'), where('orgId', '==', orgId), where('centerId', '==', centerId));
   const snapshot = await getDocs(q);
   const allReservations = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Reservation));
+  
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const datePrefix = `${year}-${month}-${day}`;
-  return allReservations.filter(r => r.startTime.startsWith(datePrefix));
+
+  // FILTRO MEMORIA: Solo devolvemos las activas para mostrar en el calendario
+  return allReservations.filter(r => 
+      r.startTime.startsWith(datePrefix) && 
+      r.status !== 'cancelled' // <--- CLAVE PARA NO MOSTRAR BORRADAS
+  );
 };
 
 export const getReservationsInRange = async (orgId: string, start: Date, end: Date, centerId?: string): Promise<Reservation[]> => {
@@ -68,34 +75,44 @@ export const getReservationsInRange = async (orgId: string, start: Date, end: Da
     const q = query(collection(db, 'reservations'), ...constraints);
     const snapshot = await getDocs(q);
     const reservations = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Reservation));
+    
     const startIso = start.toISOString();
     const endAdjusted = new Date(end);
     endAdjusted.setHours(23, 59, 59, 999);
     const endIso = endAdjusted.toISOString();
+
+    // AQUÍ DEVOLVEMOS TODO (Activas y Canceladas) para que Analytics haga el cálculo
     return reservations.filter(r => r.startTime >= startIso && r.startTime <= endIso);
 };
 
 export const createReservationDB = async (res: Omit<Reservation, 'id' | 'createdAt'>) => {
-  await addDoc(collection(db, 'reservations'), { ...res, createdAt: Date.now() });
+  await addDoc(collection(db, 'reservations'), { 
+      ...res, 
+      status: 'active', // <--- POR DEFECTO ACTIVA
+      createdAt: Date.now() 
+  });
 };
 
+// SOFT DELETE SINGLE
 export const deleteReservationDB = async (reservationId: string) => {
-  await deleteDoc(doc(db, 'reservations', reservationId));
+  // En lugar de deleteDoc, hacemos updateDoc status='cancelled'
+  const ref = doc(db, 'reservations', reservationId);
+  await updateDoc(ref, {
+      status: 'cancelled',
+      cancelledAt: Date.now()
+  });
 };
 
-// --- NUEVA FUNCIÓN: BORRAR POR RANGO DE FECHAS Y HORA ESPECÍFICA ---
+// SOFT DELETE RANGE
 export const deleteReservationsInRange = async (
   orgId: string,
   centerId: string,
   boxId: string,
   doctorName: string,
-  targetTime: string, // "HH:mm"
-  startDate: string, // YYYY-MM-DD
-  endDate: string    // YYYY-MM-DD
+  targetTime: string,
+  startDate: string,
+  endDate: string
 ): Promise<number> => {
-    // 1. Obtener todas las reservas en el rango de fechas para esa Org/Centro/Box/Médico
-    // Para simplificar query (evitar índices complejos), traemos el rango y filtramos en memoria.
-    
     const startIso = new Date(`${startDate}T00:00:00`).toISOString();
     const endObj = new Date(`${endDate}T00:00:00`);
     endObj.setHours(23, 59, 59, 999);
@@ -106,10 +123,8 @@ export const deleteReservationsInRange = async (
         where('orgId', '==', orgId),
         where('centerId', '==', centerId),
         where('boxId', '==', boxId),
-        where('doctorName', '==', doctorName)
-        // No filtramos por fecha en query para evitar error de indice compuesto si no existe,
-        // o puedes agregar where('startTime', '>=', startIso) si ya tienes el indice.
-        // Haremos filtro en memoria para máxima seguridad sin configurar indices ahora.
+        where('doctorName', '==', doctorName),
+        where('status', '!=', 'cancelled') // Solo buscar las que están activas (requiere indice simple, usually auto)
     );
 
     const snapshot = await getDocs(q);
@@ -118,15 +133,14 @@ export const deleteReservationsInRange = async (
 
     snapshot.docs.forEach(docSnap => {
         const data = docSnap.data() as Reservation;
-        
-        // Filtro 1: Rango de Fechas
         if (data.startTime >= startIso && data.startTime <= endIso) {
-            // Filtro 2: Hora exacta (ej: "08:00")
-            // Convertimos la hora de la reserva a hora chilena para comparar
             const localTime = getChileTime(data.startTime);
-            
             if (localTime === targetTime) {
-                batch.delete(docSnap.ref);
+                // SOFT DELETE EN BATCH
+                batch.update(docSnap.ref, { 
+                    status: 'cancelled',
+                    cancelledAt: Date.now()
+                });
                 count++;
             }
         }
@@ -137,7 +151,6 @@ export const deleteReservationsInRange = async (
     }
     return count;
 };
-
 
 export const mapReservationsToSlots = (reservations: Reservation[]): Map<string, Record<string, OccupiedSlotInfo>> => {
   const map = new Map<string, Record<string, OccupiedSlotInfo>>();
