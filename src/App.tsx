@@ -6,6 +6,7 @@ import AdminPanel from './components/AdminPanel';
 import AnalyticsPanel from './components/AnalyticsPanel';
 import Login from './components/Login';
 import TeamPanel from './components/TeamPanel';
+import DeleteModal from './components/DeleteModal'; // Asegúrate de tener este componente creado
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { 
   getCenters, 
@@ -15,7 +16,8 @@ import {
   createReservationDB, 
   deleteReservationDB,
   mapReservationsToSlots,
-  addDoctor
+  addDoctor,
+  deleteReservationsInRange // Nueva función importada
 } from './services/db';
 import { formatToISOWithOffset, getDayName } from './utils/dateUtils';
 import { Center, Box, Doctor, OccupiedSlotInfo } from './types';
@@ -56,6 +58,10 @@ const MainApp: React.FC = () => {
   const [occupiedSlots, setOccupiedSlots] = useState<Map<string, Record<string, OccupiedSlotInfo>>>(new Map());
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [isReserving, setIsReserving] = useState(false);
+
+  // Delete State (Nuevo para manejo de rangos)
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [reservationToDelete, setReservationToDelete] = useState<{info: OccupiedSlotInfo, time: string} | null>(null);
 
   // UI State
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -282,19 +288,51 @@ const MainApp: React.FC = () => {
     }
   };
 
-  const handleDelete = async (reservationId: string, calendarId: string) => {
+  // --- LÓGICA DE BORRADO AVANZADO (Modal) ---
+  
+  // 1. Manejador del clic en el botón de borrar (en la grilla)
+  const handleDeleteClick = (info: OccupiedSlotInfo, time: string) => {
+      setReservationToDelete({ info, time });
+      setDeleteModalOpen(true); // Abrir modal en lugar de borrar directo
+  };
+
+  // 2. Confirmación de borrado único
+  const confirmDeleteSingle = async () => {
+    if (!reservationToDelete) return;
     try {
-      await deleteReservationDB(reservationId);
-      showToast('Reserva eliminada.', 'success');
-      fetchAvailabilities();
-    } catch (e) {
-      showToast('Error al eliminar.', 'error');
-    }
+        await deleteReservationDB(reservationToDelete.info.eventId);
+        showToast('Reserva eliminada.', 'success');
+        setDeleteModalOpen(false);
+        setReservationToDelete(null);
+        fetchAvailabilities();
+    } catch(e) { console.error(e); showToast('Error al eliminar', 'error'); }
+  };
+
+  // 3. Confirmación de borrado por rango
+  const confirmDeleteRange = async (startDate: string, endDate: string) => {
+    if (!reservationToDelete || !userProfile?.orgId || !selectedCenterId) return;
+    
+    setIsCheckingAvailability(true); // Usar loading state del grid
+    try {
+        const count = await deleteReservationsInRange(
+            userProfile.orgId,
+            selectedCenterId,
+            reservationToDelete.info.boxId,
+            reservationToDelete.info.summary, // Nombre del doctor
+            reservationToDelete.time,
+            startDate,
+            endDate
+        );
+        showToast(`Se eliminaron ${count} reservas del periodo.`, 'success');
+        setDeleteModalOpen(false);
+        setReservationToDelete(null);
+        fetchAvailabilities();
+    } catch(e) { console.error(e); showToast('Error al eliminar rango', 'error'); }
+    finally { setIsCheckingAvailability(false); }
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-700 font-sans pb-24 relative overflow-hidden">
-      {/* Background decoration */}
       <div className="absolute top-0 left-0 w-full h-96 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-b-[3rem] shadow-xl z-0"></div>
 
       <div className="relative z-10 flex flex-col h-full">
@@ -308,7 +346,6 @@ const MainApp: React.FC = () => {
             </div>
             <div>
                 <span className="text-xl font-bold tracking-tight block">LockedIn<span className="text-indigo-200">Work</span></span>
-                {/* Mostrar nombre de la Organización */}
                 <span className="text-xs text-indigo-100 font-medium tracking-wide uppercase">{organization?.name}</span>
             </div>
           </div>
@@ -325,16 +362,10 @@ const MainApp: React.FC = () => {
                 </svg>
                 Admin DB
             </button>
-            
-            {/* Separator */}
             <div className="h-6 w-px bg-white/20 mx-1"></div>
-            
-            {/* Team Button */}
             <button onClick={() => setShowTeamPanel(true)} className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white px-3 py-2 rounded-full transition-all flex items-center gap-2 text-sm font-medium" title="Equipo">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>
             </button>
-            
-            {/* Logout Button */}
             <button onClick={logout} className="bg-red-500/80 hover:bg-red-600 backdrop-blur-md text-white p-2 rounded-full transition-all shadow-sm" title="Salir">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
             </button>
@@ -344,14 +375,14 @@ const MainApp: React.FC = () => {
         {/* Content */}
         <div className="container mx-auto px-4 md:px-6 max-w-7xl mt-4">
             
-            {/* Header Title & Global Search */}
+            {/* Header ... */}
             <div className="mb-10 text-white flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
                 <div>
                     <h1 className="text-3xl md:text-4xl font-bold mb-2">Panel de Reservas</h1>
                     <p className="text-indigo-100 opacity-90">Hola, {userProfile?.displayName.split(' ')[0]}. Gestiona tu clínica.</p>
                 </div>
 
-                {/* Search Bar Component */}
+                {/* Search Bar ... */}
                 <div className="relative w-full md:w-96 group z-50">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                         <svg className="h-5 w-5 text-indigo-300 group-focus-within:text-indigo-600 transition-colors" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
@@ -371,11 +402,9 @@ const MainApp: React.FC = () => {
                         onBlur={() => setTimeout(() => setIsSearchOpen(false), 200)}
                     />
                     
-                    {/* Search Results Dropdown & Status */}
+                    {/* Search Results */}
                     {isSearchOpen && searchTerm && (
                         <div className="absolute mt-2 w-full bg-white rounded-xl shadow-2xl overflow-hidden py-2 animate-fadeIn text-slate-700">
-                             
-                             {/* Section 1: Matches on Current Screen */}
                              {currentViewMatches > 0 && (
                                 <div className="px-4 py-3 bg-yellow-50 border-b border-yellow-100 flex items-center gap-2">
                                     <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
@@ -384,8 +413,6 @@ const MainApp: React.FC = () => {
                                     </span>
                                 </div>
                              )}
-
-                             {/* Section 2: Global Doctors */}
                              {filteredDoctorsGlobal.length > 0 ? (
                                 <>
                                     <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider bg-slate-50 border-b border-slate-100">
@@ -415,16 +442,12 @@ const MainApp: React.FC = () => {
                 </div>
             </div>
 
-            {/* Dashboard Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 
-                {/* Left Sidebar: Filters & Calendar */}
+                {/* Left Sidebar */}
                 <div className="lg:col-span-4 xl:col-span-3 space-y-6">
-                    
-                    {/* Filters Card */}
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Configuración</h3>
-                        
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">Centro (CAE)</label>
@@ -444,7 +467,6 @@ const MainApp: React.FC = () => {
                                     </select>
                                 </div>
                             </div>
-
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">Filtrar Box</label>
                                 <select 
@@ -457,7 +479,6 @@ const MainApp: React.FC = () => {
                                     {availableBoxes.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                                 </select>
                             </div>
-
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">Médico Responsable</label>
                                 <select 
@@ -482,17 +503,14 @@ const MainApp: React.FC = () => {
                             </div>
                         </div>
                     </div>
-
-                    {/* Calendar Component */}
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
                         <Calendar selectedDate={selectedDate} onDateSelect={setSelectedDate} />
                     </div>
                 </div>
 
-                {/* Right Area: Schedule Grid */}
+                {/* Right Area */}
                 <div className="lg:col-span-8 xl:col-span-9">
                     <div className="bg-white rounded-2xl shadow-lg border border-slate-100 min-h-[600px] flex flex-col relative overflow-hidden">
-                         {/* Header of Grid Card */}
                         <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-20">
                             <div>
                                 <h2 className="text-xl font-bold text-slate-800">
@@ -510,8 +528,6 @@ const MainApp: React.FC = () => {
                                 <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-yellow-400 border border-yellow-500"></span> Buscado</span>
                             </div>
                         </div>
-
-                        {/* Grid Content */}
                         <div className="flex-1 p-0 overflow-hidden relative bg-slate-50/50">
                              {selectedCenterId && selectedDate ? (
                                 <ScheduleGrid 
@@ -520,7 +536,7 @@ const MainApp: React.FC = () => {
                                     selectedBox={selectedBoxForRes}
                                     selectedSlots={selectedTimeSlots}
                                     onSlotClick={handleSlotClick}
-                                    onDeleteReservation={handleDelete}
+                                    onDeleteReservation={handleDeleteClick} // <--- MODIFICADO: Abre modal
                                     getCalendarIdForBox={() => ''} 
                                     isLoading={isCheckingAvailability}
                                     activeFilterBox={selectedFilterBox}
@@ -533,15 +549,13 @@ const MainApp: React.FC = () => {
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                         </svg>
                                     </div>
-                                    <p className="max-w-xs mx-auto">Selecciona un <strong>Centro</strong> y una <strong>Fecha</strong> para ver la disponibilidad o usa el buscador superior.</p>
+                                    <p className="max-w-xs mx-auto">Selecciona un <strong>Centro</strong> y una <strong>Fecha</strong> para ver la disponibilidad.</p>
                                 </div>
                              )}
                         </div>
                         
-                        {/* Footer / Action Bar (Enhanced) */}
+                        {/* Footer Form */}
                          <div className="p-4 border-t border-slate-100 bg-white space-y-4">
-                            
-                            {/* Observation Field */}
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Observación / Detalles</label>
                                 <input 
@@ -552,8 +566,6 @@ const MainApp: React.FC = () => {
                                     onChange={(e) => setObservation(e.target.value)}
                                 />
                             </div>
-
-                            {/* Recurrence Options */}
                             <div className="flex items-start gap-4 p-3 bg-slate-50 rounded-lg border border-slate-100">
                                 <div className="flex items-center h-5">
                                     <input 
@@ -597,7 +609,6 @@ const MainApp: React.FC = () => {
                                     )}
                                 </div>
                             </div>
-
                             <div className="flex justify-between items-center pt-2">
                                 <div className="text-sm text-slate-500">
                                     {selectedTimeSlots.size > 0 
@@ -636,6 +647,17 @@ const MainApp: React.FC = () => {
         {showTeamPanel && (
             <TeamPanel onClose={() => setShowTeamPanel(false)} />
         )}
+        
+        {/* MODAL DE ELIMINACIÓN */}
+        <DeleteModal 
+            isOpen={deleteModalOpen}
+            onClose={() => setDeleteModalOpen(false)}
+            onConfirmSingle={confirmDeleteSingle}
+            onConfirmRange={confirmDeleteRange}
+            doctorName={reservationToDelete?.info.summary || ''}
+            time={reservationToDelete?.time || ''}
+            isProcessing={isCheckingAvailability}
+        />
       </div>
     </div>
   );

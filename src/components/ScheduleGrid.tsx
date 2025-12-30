@@ -7,11 +7,12 @@ interface ScheduleGridProps {
   selectedBox: string | null;
   selectedSlots: Set<string>;
   onSlotClick: (box: string, time: string) => void;
-  onDeleteReservation: (eventId: string, calendarId: string) => void;
+  // MODIFICADO: Firma actualizada para soportar el Modal de Borrado por Rango
+  onDeleteReservation: (info: OccupiedSlotInfo, time: string, boxName: string) => void;
   getCalendarIdForBox: (box: string) => string | undefined;
   isLoading: boolean;
   activeFilterBox: string;
-  searchTerm: string; // <--- NUEVA PROPIEDAD
+  searchTerm: string; // Nueva propiedad para búsqueda
 }
 
 const ScheduleGrid: React.FC<ScheduleGridProps> = ({
@@ -24,7 +25,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   getCalendarIdForBox,
   isLoading,
   activeFilterBox,
-  searchTerm // <--- Recibimos el término de búsqueda
+  searchTerm
 }) => {
   const visibleBoxes = useMemo(() => {
     if (!activeFilterBox || activeFilterBox === 'all') return boxes;
@@ -86,13 +87,12 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
               const occupiedInfo = boxOccupied[time];
               const isSelected = selectedBox === box && selectedSlots.has(time);
 
-              // --- LÓGICA DE BÚSQUEDA ---
+              // --- LÓGICA DE BÚSQUEDA (Visual) ---
               const isSearchActive = searchTerm.length > 0;
               let isMatch = false;
               let isDimmed = false;
 
               if (occupiedInfo) {
-                  // Verificamos si coincide con nombre de médico u observación
                   if (isSearchActive) {
                       const term = searchTerm.toLowerCase();
                       const matchName = occupiedInfo.summary.toLowerCase().includes(term);
@@ -101,11 +101,11 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                       if (matchName || matchObs) {
                           isMatch = true;
                       } else {
-                          isDimmed = true; // No coincide, lo apagamos visualmente
+                          isDimmed = true;
                       }
                   }
               }
-              // ---------------------------
+              // -----------------------------------
 
               return (
                 <div key={`${box}-${time}`} className="h-16 p-2 border-b border-r border-slate-50 flex items-center justify-center relative group">
@@ -134,14 +134,13 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                       <button
                         onClick={(e) => {
                             e.stopPropagation();
-                            if(window.confirm('¿Eliminar reserva?')) {
-                                const calId = getCalendarIdForBox(box);
-                                onDeleteReservation(occupiedInfo.eventId, calId || '');
-                            }
+                            // MODIFICADO: Llama a la función del padre (App.tsx) que abre el Modal
+                            onDeleteReservation(occupiedInfo, time, box);
                         }}
-                        className={`absolute top-1 right-1 w-5 h-5 bg-white rounded-full flex items-center justify-center hover:bg-red-500 hover:text-white transition-colors shadow-sm
+                        className={`absolute top-1 right-1 w-5 h-5 bg-white rounded-full flex items-center justify-center hover:bg-red-500 hover:text-white transition-colors shadow-sm z-20
                             ${isMatch ? 'text-yellow-600 opacity-100' : 'text-slate-400 opacity-0 group-hover:opacity-100'}
                         `}
+                        title="Eliminar reserva"
                       >
                         &times;
                       </button>
@@ -153,7 +152,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                         ${isSelected 
                           ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-200 scale-[1.02]' 
                           : isSearchActive 
-                             ? 'bg-white border-transparent' // Si busca, ocultar botones '+' para limpiar vista
+                             ? 'bg-white border-transparent' // Ocultar '+' si buscamos para limpiar vista
                              : 'bg-white border-transparent text-transparent hover:border-indigo-100 hover:bg-indigo-50 hover:text-indigo-400'
                         }
                       `}
