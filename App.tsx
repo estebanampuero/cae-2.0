@@ -4,6 +4,9 @@ import ScheduleGrid from './components/ScheduleGrid';
 import Toast from './components/Toast';
 import AdminPanel from './components/AdminPanel';
 import AnalyticsPanel from './components/AnalyticsPanel';
+import Login from './components/Login';
+import TeamPanel from './components/TeamPanel';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { 
   getCenters, 
   getBoxes, 
@@ -17,9 +20,9 @@ import {
 import { formatToISOWithOffset, getDayName } from './utils/dateUtils';
 import { Center, Box, Doctor, OccupiedSlotInfo } from './types';
 
-const App: React.FC = () => {
-  // Auth State (Mocked)
-  const [user] = useState<any>({ uid: 'dev-user', email: 'admin@dev.com' });
+// Componente Principal (Solo accesible si está autenticado)
+const MainApp: React.FC = () => {
+  const { userProfile, logout, organization } = useAuth();
   
   // Data State
   const [centers, setCenters] = useState<Center[]>([]);
@@ -41,15 +44,15 @@ const App: React.FC = () => {
   const [selectedBoxForRes, setSelectedBoxForRes] = useState<string | null>(null);
   const [selectedTimeSlots, setSelectedTimeSlots] = useState<Set<string>>(new Set());
   
-  // New: Reservation Details
+  // Details
   const [observation, setObservation] = useState('');
 
-  // New: Recurrence State
+  // Recurrence
   const [isRecurring, setIsRecurring] = useState(false);
   const [recurrenceEndDate, setRecurrenceEndDate] = useState('');
-  const [selectedWeekDays, setSelectedWeekDays] = useState<number[]>([]); // 0=Domingo, 1=Lunes...
+  const [selectedWeekDays, setSelectedWeekDays] = useState<number[]>([]); 
 
-  // Availability State
+  // Availability
   const [occupiedSlots, setOccupiedSlots] = useState<Map<string, Record<string, OccupiedSlotInfo>>>(new Map());
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [isReserving, setIsReserving] = useState(false);
@@ -58,18 +61,22 @@ const App: React.FC = () => {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showAnalyticsPanel, setShowAnalyticsPanel] = useState(false);
+  const [showTeamPanel, setShowTeamPanel] = useState(false);
 
-  // Load Data on Mount
+  // Cargar datos cuando el perfil (y su orgId) estén listos
   useEffect(() => {
-    loadInitialData();
-  }, []);
+    if (userProfile?.orgId) {
+        loadInitialData(userProfile.orgId);
+    }
+  }, [userProfile]);
 
-  const loadInitialData = async () => {
+  const loadInitialData = async (orgId: string) => {
     try {
+      // Pasamos orgId a todas las peticiones
       const [centersData, boxesData, doctorsData] = await Promise.all([
-        getCenters(),
-        getBoxes(),
-        getDoctors() 
+        getCenters(orgId),
+        getBoxes(orgId),
+        getDoctors(orgId) 
       ]);
       
       setCenters(centersData);
@@ -85,7 +92,6 @@ const App: React.FC = () => {
     setToast({ message, type });
   };
 
-  // Filtered Lists for Dropdowns
   const availableBoxes = useMemo(() => {
     if (!selectedCenterId) return [];
     return boxes
@@ -98,7 +104,6 @@ const App: React.FC = () => {
     return allDoctors.filter(d => d.centerId === selectedCenterId);
   }, [allDoctors, selectedCenterId]);
 
-  // Global Search Logic (Navigational)
   const filteredDoctorsGlobal = useMemo(() => {
     if (!searchTerm) return [];
     return allDoctors.filter(d => 
@@ -106,15 +111,12 @@ const App: React.FC = () => {
     );
   }, [allDoctors, searchTerm]);
 
-  // Local Search Logic (Current View Highlighting Count)
   const currentViewMatches = useMemo(() => {
     if (!searchTerm || occupiedSlots.size === 0) return 0;
     let count = 0;
     const term = searchTerm.toLowerCase();
-    // Iterar sobre el mapa de slots ocupados
     for (const slots of occupiedSlots.values()) {
         Object.values(slots).forEach((info) => {
-            // Buscar coincidencia en Nombre (summary) u Observación
             if (info.summary.toLowerCase().includes(term) || 
                (info.observation && info.observation.toLowerCase().includes(term))) {
                 count++;
@@ -128,18 +130,18 @@ const App: React.FC = () => {
     setSelectedCenterId(doctor.centerId);
     setSelectedDoctorId(doctor.id);
     setSelectedFilterBox('all');
-    setSearchTerm(''); // Clear search to show full calendar
+    setSearchTerm(''); 
     setIsSearchOpen(false);
     showToast(`Mostrando agenda del Dr/a. ${doctor.name}`, 'info');
   };
 
-  // Availability Logic
   const fetchAvailabilities = async () => {
-    if (!selectedCenterId || !selectedDate) return;
+    if (!selectedCenterId || !selectedDate || !userProfile?.orgId) return;
     
     setIsCheckingAvailability(true);
     try {
-      const reservations = await getReservationsForDate(selectedCenterId, selectedDate);
+      // Pasamos orgId para filtrar solo nuestras reservas
+      const reservations = await getReservationsForDate(userProfile.orgId, selectedCenterId, selectedDate);
       const map = mapReservationsToSlots(reservations);
       setOccupiedSlots(map);
     } catch (e) {
@@ -187,6 +189,7 @@ const App: React.FC = () => {
       showToast('Completa los campos y selecciona un horario.', 'error');
       return;
     }
+    if (!userProfile?.orgId) return;
 
     if (isRecurring && (!recurrenceEndDate || selectedWeekDays.length === 0)) {
         showToast('Para reservas recurrentes selecciona días y fecha fin.', 'error');
@@ -198,8 +201,9 @@ const App: React.FC = () => {
         finalDoctorName = otroMedicoName;
         if (otroMedicoName) {
             try {
-               await addDoctor(otroMedicoName, selectedCenterId);
-               const updatedDocs = await getDoctors();
+               // Crear médico asociado a la ORG
+               await addDoctor(otroMedicoName, selectedCenterId, userProfile.orgId);
+               const updatedDocs = await getDoctors(userProfile.orgId);
                setAllDoctors(updatedDocs);
             } catch(e) { console.error("Error creating auto doctor", e); }
         }
@@ -211,7 +215,6 @@ const App: React.FC = () => {
     const boxObj = boxes.find(b => b.name === selectedBoxForRes && b.centerId === selectedCenterId);
     if (!boxObj || !finalDoctorName) return showToast('Error en datos de reserva', 'error');
 
-    // Conflict Check (Only for the CURRENT day visually)
     const boxOccupied = occupiedSlots.get(selectedBoxForRes) || {};
     const hasConflict = (Array.from(selectedTimeSlots) as string[]).some(t => boxOccupied[t]);
     if (hasConflict) {
@@ -230,7 +233,6 @@ const App: React.FC = () => {
         const limitDate = new Date(recurrenceEndDate);
         limitDate.setHours(23, 59, 59);
 
-        // Loop from start date until limit
         while (currentDate <= limitDate) {
             if (selectedWeekDays.includes(currentDate.getDay())) {
                 datesToProcess.push(new Date(currentDate));
@@ -241,7 +243,6 @@ const App: React.FC = () => {
           datesToProcess.push(selectedDate);
       }
 
-      // Create reservations for all calculated dates
       let createdCount = 0;
       for (const dateTarget of datesToProcess) {
           for (const time of slots) {
@@ -251,14 +252,15 @@ const App: React.FC = () => {
               const endTimeStr = `${String(endMapDate.getHours()).padStart(2, '0')}:${String(endMapDate.getMinutes()).padStart(2, '0')}`;
               
               await createReservationDB({
+                orgId: userProfile.orgId, // ASOCIAR A LA ORG
                 centerId: selectedCenterId,
                 boxId: boxObj.id,
                 boxName: boxObj.name,
                 doctorName: finalDoctorName,
-                observation: observation, // Save Observation
+                observation: observation,
                 startTime: formatToISOWithOffset(dateTarget, time),
                 endTime: formatToISOWithOffset(dateTarget, endTimeStr),
-                userId: user.uid
+                userId: userProfile.uid
               });
           }
           createdCount++;
@@ -304,38 +306,49 @@ const App: React.FC = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
             </div>
-            <span className="text-xl font-bold tracking-tight">LockedIn<span className="text-indigo-200">Work</span></span>
+            <div>
+                <span className="text-xl font-bold tracking-tight block">LockedIn<span className="text-indigo-200">Work</span></span>
+                {/* Mostrar nombre de la Organización */}
+                <span className="text-xs text-indigo-100 font-medium tracking-wide uppercase">{organization?.name}</span>
+            </div>
           </div>
-          <div className="flex gap-3">
-             <button 
-                onClick={() => setShowAnalyticsPanel(true)}
-                className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white px-4 py-2 rounded-full transition-all flex items-center gap-2 text-sm font-medium"
-            >
+          <div className="flex gap-3 items-center">
+             <button onClick={() => setShowAnalyticsPanel(true)} className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white px-4 py-2 rounded-full transition-all flex items-center gap-2 text-sm font-medium">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
                 </svg>
                 Analytics
             </button>
-            <button 
-                onClick={() => setShowAdminPanel(true)}
-                className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white px-4 py-2 rounded-full transition-all flex items-center gap-2 text-sm font-medium"
-            >
+            <button onClick={() => setShowAdminPanel(true)} className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white px-4 py-2 rounded-full transition-all flex items-center gap-2 text-sm font-medium">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                    <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
                 </svg>
                 Admin DB
             </button>
+            
+            {/* Separator */}
+            <div className="h-6 w-px bg-white/20 mx-1"></div>
+            
+            {/* Team Button */}
+            <button onClick={() => setShowTeamPanel(true)} className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white px-3 py-2 rounded-full transition-all flex items-center gap-2 text-sm font-medium" title="Equipo">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>
+            </button>
+            
+            {/* Logout Button */}
+            <button onClick={logout} className="bg-red-500/80 hover:bg-red-600 backdrop-blur-md text-white p-2 rounded-full transition-all shadow-sm" title="Salir">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+            </button>
           </div>
         </nav>
 
-        {/* Main Content */}
+        {/* Content */}
         <div className="container mx-auto px-4 md:px-6 max-w-7xl mt-4">
             
             {/* Header Title & Global Search */}
             <div className="mb-10 text-white flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
                 <div>
                     <h1 className="text-3xl md:text-4xl font-bold mb-2">Panel de Reservas</h1>
-                    <p className="text-indigo-100 opacity-90">Gestiona espacios y médicos de forma centralizada.</p>
+                    <p className="text-indigo-100 opacity-90">Hola, {userProfile?.displayName.split(' ')[0]}. Gestiona tu clínica.</p>
                 </div>
 
                 {/* Search Bar Component */}
@@ -610,7 +623,7 @@ const App: React.FC = () => {
         {showAdminPanel && (
             <AdminPanel 
                 onClose={() => setShowAdminPanel(false)} 
-                onDataChange={loadInitialData}
+                onDataChange={() => userProfile?.orgId && loadInitialData(userProfile.orgId)}
             />
         )}
         
@@ -619,9 +632,29 @@ const App: React.FC = () => {
                 onClose={() => setShowAnalyticsPanel(false)}
             />
         )}
+
+        {showTeamPanel && (
+            <TeamPanel onClose={() => setShowTeamPanel(false)} />
+        )}
       </div>
     </div>
   );
+};
+
+// Wrapper para Auth
+const App: React.FC = () => {
+  return (
+    <AuthProvider>
+        <AuthGuard />
+    </AuthProvider>
+  );
+};
+
+const AuthGuard = () => {
+    const { currentUser, loading } = useAuth();
+    if (loading) return <div className="h-screen flex items-center justify-center bg-slate-50 text-slate-400">Cargando...</div>;
+    if (!currentUser) return <Login />;
+    return <MainApp />;
 };
 
 export default App;
