@@ -69,9 +69,10 @@ const Calendar: React.FC<CalendarProps> = ({ selectedDate, onDateSelect }) => {
         </button>
       </div>
       
+      {/* CORRECCIÓN AQUÍ: Usamos 'i' (índice) como key en lugar de 'd' (letra) */}
       <div className="grid grid-cols-7 gap-y-2 mb-2 text-center">
-        {['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(d => (
-          <div key={d} className="text-[10px] font-bold text-slate-300">{d}</div>
+        {['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((d, i) => (
+          <div key={i} className="text-[10px] font-bold text-slate-300">{d}</div>
         ))}
       </div>
       

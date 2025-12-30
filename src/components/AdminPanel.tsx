@@ -4,8 +4,9 @@ import {
   addCenter, addBox, addDoctor, getCenters, getBoxes, getDoctors 
 } from '../services/db';
 import { Center } from '../types';
-import { writeBatch, doc, collection, getCountFromServer } from 'firebase/firestore'; 
+import { writeBatch, doc, collection, getCountFromServer, getDocs, updateDoc } from 'firebase/firestore'; 
 import { db } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 
 interface AdminPanelProps {
   onClose: () => void;
@@ -14,26 +15,20 @@ interface AdminPanelProps {
 
 type ImportType = 'reservations' | 'infrastructure' | 'doctors';
 
-// --- FUNCIÓN AUXILIAR PARA EVITAR ERROR DE QUOTA ---
+// --- AJUSTE CRÍTICO: Pausa más larga para dar tiempo a las reglas de seguridad ---
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- NUEVA FUNCIÓN: CONVERTIR STRING A HORA CHILENA REAL ---
-// Esta función toma la hora visual (ej. 13:00) y calcula qué UTC 
-// corresponde para que en Chile sean efectivamente las 13:00 en esa fecha.
+// --- CONVERTIR STRING A HORA CHILENA REAL ---
 const parseChileanDate = (dateString: string): Date => {
   if (!dateString) return new Date();
-
-  // 1. Limpiamos el string para quitar el "+00" y dejarlo como "YYYY-MM-DDTHH:mm:ss"
   const cleanDate = dateString.split('+')[0].trim().replace(' ', 'T');
-  
-  // 2. Creamos una fecha asumiendo que esos números son UTC (la 'Z' al final lo indica).
-  // Esto crea un objeto Date que representa exactamente la hora UTC del CSV.
   const date = new Date(cleanDate + 'Z');
-
   return date;
 };
 
 const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
+  const { userProfile } = useAuth();
+  
   const [activeTab, setActiveTab] = useState<'centers' | 'boxes' | 'doctors' | 'import'>('centers');
   const [centers, setCenters] = useState<Center[]>([]);
   
@@ -52,19 +47,23 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    loadCenters();
-  }, []);
+    if (userProfile?.orgId) {
+        loadCenters();
+    }
+  }, [userProfile]);
 
   const loadCenters = async () => {
-    const data = await getCenters();
+    if (!userProfile?.orgId) return;
+    const data = await getCenters(userProfile.orgId);
     setCenters(data);
   };
 
+  // --- CREACIÓN MANUAL ---
   const handleAddCenter = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!centerName) return;
+    if (!centerName || !userProfile?.orgId) return;
     setIsLoading(true);
-    await addCenter(centerName);
+    await addCenter(centerName, userProfile.orgId);
     setCenterName('');
     setMessage('CAE agregado correctamente');
     await loadCenters();
@@ -74,9 +73,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
 
   const handleAddBox = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!boxName || !selectedCenterId) return;
+    if (!boxName || !selectedCenterId || !userProfile?.orgId) return;
     setIsLoading(true);
-    await addBox(boxName, selectedCenterId);
+    await addBox(boxName, selectedCenterId, userProfile.orgId);
     setBoxName('');
     setMessage('Box agregado correctamente');
     onDataChange();
@@ -85,33 +84,22 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
 
   const handleAddDoctor = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!doctorName || !selectedCenterId) return;
+    if (!doctorName || !selectedCenterId || !userProfile?.orgId) return;
     setIsLoading(true);
-    await addDoctor(doctorName, selectedCenterId);
+    await addDoctor(doctorName, selectedCenterId, userProfile.orgId);
     setDoctorName('');
     setMessage('Médico agregado correctamente');
     onDataChange();
     setIsLoading(false);
   };
 
-  // --- VERIFICAR CANTIDAD EN FIREBASE ---
-  const verificarCantidad = async () => {
-    try {
-        setMessage('Contando documentos en la nube...');
-        const coll = collection(db, "reservations");
-        const snapshot = await getCountFromServer(coll);
-        const count = snapshot.data().count;
-        setMessage(`Total de reservas confirmadas en Firebase: ${count}`);
-    } catch (e: any) {
-        console.error(e);
-        setMessage(`Error al contar: ${e.message}`);
-    }
-  };
-
   // --- CONTROLADOR PRINCIPAL DE IMPORTACIÓN ---
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !userProfile?.orgId) {
+        setImportLog(prev => [...prev, "Error: No se identificó la organización del usuario."]);
+        return;
+    }
 
     setImporting(true);
     setImportLog(['Leyendo archivo...', 'Analizando estructura...']);
@@ -137,12 +125,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
 
   // 1. PROCESADOR DE INFRAESTRUCTURA
   const processInfrastructure = async (data: any[]) => {
-      const logs: string[] = [`Procesando ${data.length} filas de infraestructura...`];
-      setImportLog(logs);
+      if (!userProfile?.orgId) return;
+      const orgId = userProfile.orgId;
+      setImportLog(l => [...l, `Procesando ${data.length} filas de infraestructura...`]);
 
       try {
-          const currentCenters = await getCenters();
-          const currentBoxes = await getBoxes();
+          const currentCenters = await getCenters(orgId);
+          const currentBoxes = await getBoxes(orgId);
           
           const centerMap = new Map(currentCenters.map(c => [c.name.toLowerCase().trim(), c]));
           const boxMap = new Map(currentBoxes.map(b => [`${b.centerId}_${b.name.toLowerCase().trim()}`, b]));
@@ -150,6 +139,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
           let newCenters = 0;
           let newBoxes = 0;
 
+          // Infraestructura suele ser poca data, no necesita batching extremo
           for (const row of data) {
               const rawCae = row.cae ? row.cae.trim() : '';
               const rawBox = row.box ? row.box.trim() : '';
@@ -162,28 +152,24 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
               if (centerMap.has(centerKey)) {
                   centerId = centerMap.get(centerKey)!.id;
               } else {
-                  const newC = await addCenter(rawCae);
+                  const newC = await addCenter(rawCae, orgId);
                   centerMap.set(centerKey, newC);
                   centerId = newC.id;
                   newCenters++;
-                  logs.push(`[+] Nuevo CAE: ${rawCae}`);
+                  setImportLog(l => [...l, `[+] Nuevo CAE: ${rawCae}`]);
               }
 
               const boxKey = `${centerId}_${rawBox.toLowerCase()}`;
               if (!boxMap.has(boxKey)) {
-                  const newB = await addBox(rawBox, centerId);
+                  const newB = await addBox(rawBox, centerId, orgId);
                   boxMap.set(boxKey, newB);
                   newBoxes++;
-                  if (newBoxes % 5 === 0) logs.push(`[+] Agregados ${newBoxes} boxes...`);
               }
           }
-
-          logs.push(`FIN: Se crearon ${newCenters} CAEs y ${newBoxes} Boxes nuevos.`);
-          setImportLog([...logs]);
+          setImportLog(l => [...l, `FIN: ${newCenters} CAEs y ${newBoxes} Boxes creados.`]);
           onDataChange();
       } catch (e: any) {
-          logs.push(`ERROR: ${e.message}`);
-          setImportLog([...logs]);
+          setImportLog(l => [...l, `ERROR: ${e.message}`]);
       } finally {
           setImporting(false);
       }
@@ -191,12 +177,13 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
 
   // 2. PROCESADOR DE MÉDICOS
   const processDoctors = async (data: any[]) => {
-      const logs: string[] = [`Procesando ${data.length} filas de médicos...`];
-      setImportLog(logs);
+      if (!userProfile?.orgId) return;
+      const orgId = userProfile.orgId;
+      setImportLog(l => [...l, `Procesando ${data.length} filas de médicos...`]);
 
       try {
-          const currentCenters = await getCenters();
-          const currentDoctors = await getDoctors();
+          const currentCenters = await getCenters(orgId);
+          const currentDoctors = await getDoctors(orgId);
 
           const centerMap = new Map(currentCenters.map(c => [c.name.toLowerCase().trim(), c]));
           const doctorMap = new Map(currentDoctors.map(d => [`${d.centerId}_${d.name.toLowerCase().trim()}`, d]));
@@ -206,61 +193,60 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
           for (const row of data) {
               const rawCae = row.cae ? row.cae.trim() : '';
               const rawMedico = row.medico ? row.medico.trim() : '';
-
               if (!rawCae || !rawMedico) continue;
 
               let centerId = '';
               const centerKey = rawCae.toLowerCase();
-
               if (centerMap.has(centerKey)) {
                   centerId = centerMap.get(centerKey)!.id;
               } else {
-                  const newC = await addCenter(rawCae);
+                  const newC = await addCenter(rawCae, orgId);
                   centerMap.set(centerKey, newC);
                   centerId = newC.id;
-                  logs.push(`[+] Nuevo CAE creado por médico: ${rawCae}`);
               }
 
               const docKey = `${centerId}_${rawMedico.toLowerCase()}`;
               if (!doctorMap.has(docKey)) {
-                  const newD = await addDoctor(rawMedico, centerId);
+                  const newD = await addDoctor(rawMedico, centerId, orgId);
                   doctorMap.set(docKey, newD);
                   newDoctors++;
-                  if (newDoctors % 5 === 0) logs.push(`[+] Agregados ${newDoctors} médicos...`);
               }
           }
-
-          logs.push(`FIN: Se agregaron ${newDoctors} médicos nuevos.`);
-          setImportLog([...logs]);
+          setImportLog(l => [...l, `FIN: ${newDoctors} médicos creados.`]);
           onDataChange();
       } catch (e: any) {
-          logs.push(`ERROR: ${e.message}`);
-          setImportLog([...logs]);
+          setImportLog(l => [...l, `ERROR: ${e.message}`]);
       } finally {
           setImporting(false);
       }
   };
 
-  // 3. PROCESADOR DE RESERVAS (USANDO PARSE CHILEAN DATE)
+  // 3. PROCESADOR DE RESERVAS (OPTIMIZADO PARA REGLAS SAAS)
   const processReservations = async (data: any[]) => {
+    if (!userProfile?.orgId) return;
+    const orgId = userProfile.orgId;
+
     try {
-        const logs: string[] = [`Iniciando carga de ${data.length} reservas...`];
+        const logs: string[] = [`Iniciando carga de ${data.length} reservas para Org: ${orgId}...`];
         setImportLog(logs);
 
-        const currentCenters = await getCenters();
-        const currentBoxes = await getBoxes();
+        // Pre-carga de datos para evitar lecturas en el bucle
+        const currentCenters = await getCenters(orgId);
+        const currentBoxes = await getBoxes(orgId);
         
         const centerMap = new Map(currentCenters.map(c => [c.name.toLowerCase().trim(), c]));
         const boxMap = new Map(currentBoxes.map(b => [`${b.centerId}_${b.name.toLowerCase().trim()}`, b]));
 
         let newReservationsCount = 0;
-        const batchSize = 400; 
+        
+        // --- AJUSTE DE RENDIMIENTO PARA REGLAS DE SEGURIDAD ---
+        // Reducimos el batchSize para que Firebase pueda validar cada documento sin timeout
+        const batchSize = 100; // Antes 400. Menos es más seguro.
         let batch = writeBatch(db);
         let opCount = 0;
 
         for (const row of data) {
-            if (!row.id) continue;
-
+            // Validaciones
             const rawCenterName = row.location || row.cae;
             const rawDescription = row.description || '';
             const rawBoxName = rawDescription.includes('-') ? rawDescription.split('-')[0].trim() : rawDescription.trim();
@@ -268,38 +254,41 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
 
             if (!rawCenterName || !rawBoxName || !row.start_time) continue;
 
-            // 1. Resolver Centro
+            // 1. Resolver Centro (En memoria)
             let centerId = '';
             const centerKey = rawCenterName.toLowerCase().trim();
             if (centerMap.has(centerKey)) {
                 centerId = centerMap.get(centerKey)!.id;
             } else {
-                const newCenter = await addCenter(rawCenterName.trim());
+                // Si no existe, lo creamos. (Esto puede ser lento si hay muchos nuevos, pero es raro en reservas)
+                const newCenter = await addCenter(rawCenterName.trim(), orgId);
                 centerMap.set(centerKey, newCenter);
                 centerId = newCenter.id;
             }
 
-            // 2. Resolver Box
+            // 2. Resolver Box (En memoria)
             let boxId = '';
             const boxKey = `${centerId}_${rawBoxName.toLowerCase()}`;
             if (boxMap.has(boxKey)) {
                 boxId = boxMap.get(boxKey)!.id;
             } else {
-                const newBox = await addBox(rawBoxName, centerId);
+                const newBox = await addBox(rawBoxName, centerId, orgId);
                 boxMap.set(boxKey, newBox);
                 boxId = newBox.id;
             }
 
-            // 3. Fechas: AQUÍ APLICAMOS LA LÓGICA DE CORRECCIÓN
-            // parseChileanDate se encargará de ajustar el offset
+            // 3. Fechas
             const startDate = parseChileanDate(row.start_time);
             const endDate = parseChileanDate(row.end_time);
 
             if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) continue;
 
-            const resRef = doc(db, 'reservations', row.id);
+            const resRef = row.id ? doc(db, 'reservations', row.id) : doc(collection(db, 'reservations'));
 
+            // ESCRITURA EN EL BATCH
+            // Al incluir orgId aquí, la regla `resource.data.orgId == user.orgId` se cumplirá.
             batch.set(resRef, {
+                orgId, 
                 centerId,
                 boxId,
                 boxName: rawBoxName,
@@ -307,7 +296,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
                 observation: 'Importado Supabase',
                 startTime: startDate.toISOString(), 
                 endTime: endDate.toISOString(),
-                userId: 'import-script',
+                userId: userProfile.uid,
                 originalEventId: row.event_id || '', 
                 createdAt: Date.now()
             }, { merge: true }); 
@@ -315,15 +304,17 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
             opCount++;
             newReservationsCount++;
 
+            // COMMIT DEL BATCH
             if (opCount >= batchSize) {
-                await batch.commit();
+                await batch.commit(); // Aquí Firebase valida las reglas para los 100 docs
                 
                 setImportLog(prev => [
                     ...prev.slice(-5), 
-                    `[PROGRESO] Guardadas ${newReservationsCount} / ${data.length}... Pausando 1s...`
+                    `[PROGRESO] Guardadas ${newReservationsCount} / ${data.length}... Esperando 2s...`
                 ]);
                 
-                await delay(1000); 
+                // Pausa más larga para enfriar la evaluación de reglas
+                await delay(2000); 
 
                 batch = writeBatch(db); 
                 opCount = 0;
@@ -358,16 +349,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
         </div>
         
         {/* Tabs */}
-        <div className="flex p-2 gap-2 bg-slate-50/50">
+        <div className="flex p-2 gap-2 bg-slate-50/50 overflow-x-auto">
           {[
             { id: 'centers', label: 'Centros' },
             { id: 'boxes', label: 'Boxes' },
             { id: 'doctors', label: 'Médicos' },
-            { id: 'import', label: 'Importación Masiva' }
+            { id: 'import', label: 'Importar' }
           ].map(tab => (
               <button 
                 key={tab.id}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-100'}`}
+                className={`flex-1 py-2 px-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-100'}`}
                 onClick={() => setActiveTab(tab.id as any)}
               >
                 {tab.label}
@@ -384,6 +375,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
             </div>
           )}
 
+          {/* FORMULARIOS MANUALES */}
           {activeTab === 'centers' && (
             <form onSubmit={handleAddCenter} className="space-y-4">
               <div>
@@ -397,9 +389,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
                   autoFocus
                 />
               </div>
-              <button disabled={isLoading} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-lg shadow-indigo-200">
-                {isLoading ? 'Guardando...' : 'Crear Centro'}
-              </button>
+              <button disabled={isLoading} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50">Crear Centro</button>
             </form>
           )}
 
@@ -426,9 +416,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
                   placeholder="Ej: Box 101"
                 />
               </div>
-              <button disabled={isLoading || !selectedCenterId} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-lg shadow-indigo-200">
-                {isLoading ? 'Guardando...' : 'Crear Box'}
-              </button>
+              <button disabled={isLoading || !selectedCenterId} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50">Crear Box</button>
             </form>
           )}
 
@@ -455,16 +443,15 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
                   placeholder="Ej: Dr. Juan Pérez"
                 />
               </div>
-              <button disabled={isLoading || !selectedCenterId} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-lg shadow-indigo-200">
-                {isLoading ? 'Guardando...' : 'Registrar Médico'}
-              </button>
+              <button disabled={isLoading || !selectedCenterId} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50">Registrar Médico</button>
             </form>
           )}
 
+          {/* SECCIÓN DE IMPORTACIÓN */}
           {activeTab === 'import' && (
               <div className="space-y-4">
                   <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 text-sm text-indigo-800">
-                      <p className="font-bold mb-2">Selecciona qué vas a importar:</p>
+                      <p className="font-bold mb-2">Importar a {userProfile?.displayName ? `Clínica de ${userProfile.displayName}` : 'Tu Organización'}</p>
                       <div className="flex flex-col gap-2">
                           <label className="flex items-center gap-2 cursor-pointer">
                               <input 
@@ -515,22 +502,9 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ onClose, onDataChange }) => {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                           </svg>
                           <p className="text-slate-500 font-medium">
-                              Arrastra el CSV de {importType === 'reservations' ? 'Reservas' : importType === 'infrastructure' ? 'Infraestructura' : 'Médicos'}
+                              Arrastra el CSV aquí
                           </p>
                       </div>
-                  </div>
-
-                  {/* NUEVO BOTÓN PARA VERIFICAR CANTIDAD */}
-                  <div className="flex justify-end">
-                    <button 
-                        onClick={verificarCantidad}
-                        className="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1 bg-indigo-50 px-3 py-2 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        Verificar Total en Nube
-                    </button>
                   </div>
 
                   {importing && (

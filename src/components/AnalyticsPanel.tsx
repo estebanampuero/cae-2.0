@@ -3,10 +3,11 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell
 } from 'recharts';
-import * as XLSX from 'xlsx'; // Importar librería de Excel
+import * as XLSX from 'xlsx'; 
 import { getCenters, getReservationsInRange, getBoxes } from '../services/db';
 import { Center, Reservation, Box } from '../types';
 import { getChileTime } from '../utils/dateUtils';
+import { useAuth } from '../context/AuthContext';
 
 interface AnalyticsPanelProps {
   onClose: () => void;
@@ -15,6 +16,8 @@ interface AnalyticsPanelProps {
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#10b981', '#f59e0b'];
 
 const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
+  const { userProfile } = useAuth();
+  
   // State for Filters
   const [centers, setCenters] = useState<Center[]>([]);
   const [selectedCenterId, setSelectedCenterId] = useState('');
@@ -39,36 +42,58 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
 
   // 1. Load centers on mount
   useEffect(() => {
-    getCenters().then(setCenters);
-  }, []);
+    if (userProfile?.orgId) {
+        getCenters(userProfile.orgId).then(setCenters);
+    }
+  }, [userProfile]);
 
   // 2. Load boxes when Center selection changes
   useEffect(() => {
     const fetchBoxes = async () => {
-        const boxesData = await getBoxes(selectedCenterId || undefined);
+        if (!userProfile?.orgId) return;
+        const boxesData = await getBoxes(userProfile.orgId, selectedCenterId || undefined);
         setAllBoxes(boxesData);
     };
     fetchBoxes();
-  }, [selectedCenterId]);
+  }, [selectedCenterId, userProfile]);
 
-  // 3. Fetch data when date/center filters change
-  useEffect(() => {
-    const fetchData = async () => {
-      setIsLoading(true);
-      try {
-        const start = new Date(`${startDate}T00:00:00`);
-        const end = new Date(`${endDate}T00:00:00`); 
-        const data = await getReservationsInRange(start, end, selectedCenterId || undefined);
-        setRawData(data);
-      } catch (error) {
-        console.error("Error fetching analytics:", error);
-      } finally {
-        setIsLoading(false);
+  // 3. Función Manual para generar el reporte
+  const handleGenerateReport = async () => {
+    // Validaciones de seguridad
+    if (!startDate || !endDate || !userProfile?.orgId) return;
+
+    setIsLoading(true);
+    try {
+      const start = new Date(`${startDate}T00:00:00`);
+      const end = new Date(`${endDate}T00:00:00`); 
+      
+      // Validación extra
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          setIsLoading(false);
+          return;
       }
-    };
 
-    fetchData();
-  }, [startDate, endDate, selectedCenterId]);
+      const data = await getReservationsInRange(
+          userProfile.orgId, 
+          start, 
+          end, 
+          selectedCenterId || undefined
+      );
+      setRawData(data);
+    } catch (error) {
+      console.error("Error fetching analytics:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Carga inicial automática (solo una vez al montar o loguear)
+  useEffect(() => {
+      if (userProfile?.orgId) {
+          handleGenerateReport();
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile]); // Quitamos dependencias de filtros para que no sea automático
 
   // --- DATA PROCESSING ---
   
@@ -86,11 +111,16 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
     
     const [startH, startM] = startTimeFilter.split(':').map(Number);
     const [endH, endM] = endTimeFilter.split(':').map(Number);
+    
+    if (isNaN(startH) || isNaN(endH)) return 0;
+
     const filterStartDec = startH + (startM / 60);
     const filterEndDec = endH + (endM / 60);
 
     const current = new Date(`${startDate}T00:00:00`);
     const end = new Date(`${endDate}T00:00:00`);
+
+    if (isNaN(current.getTime()) || isNaN(end.getTime())) return 0;
 
     let safeGuard = 0;
     while (current <= end && safeGuard < 1000) {
@@ -107,7 +137,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
             businessOpen = 8.0;
             businessClose = 16.0;
         } else {
-            // Sábado y Domingo (0 y 6) -> 0 Horas
+            // Sábado y Domingo -> 0 Horas
             businessOpen = 0;
             businessClose = 0;
         }
@@ -165,12 +195,12 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
     const map: Record<string, number> = {};
     let cur = new Date(`${startDate}T00:00:00`);
     const last = new Date(`${endDate}T00:00:00`);
-    let loops = 0;
     
-    // Inicializar solo días hábiles
+    if (isNaN(cur.getTime()) || isNaN(last.getTime())) return [];
+
+    let loops = 0;
     while (cur <= last && loops < 365) {
         const dayOfWeek = cur.getDay();
-        // Solo agregar al mapa si NO es domingo (0) ni sábado (6)
         if (dayOfWeek !== 0 && dayOfWeek !== 6) {
             const k = cur.toISOString().split('T')[0];
             map[k] = 0;
@@ -181,7 +211,6 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
 
     filteredData.forEach(r => {
         const day = r.startTime.split('T')[0];
-        // Solo contar si el día existe en el mapa (es día hábil)
         if (map[day] !== undefined) map[day]++;
     });
 
@@ -214,6 +243,9 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
       let count = 0;
       let cur = new Date(`${startDate}T00:00:00`);
       const last = new Date(`${endDate}T00:00:00`);
+      
+      if (isNaN(cur.getTime()) || isNaN(last.getTime())) return 1;
+
       let loops = 0;
       while (cur <= last && loops < 365) {
           const day = cur.getDay();
@@ -233,7 +265,6 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         return;
     }
 
-    // 1. Hoja de Resumen (KPIs)
     const summaryData = [
         { Metrica: "Fecha Reporte", Valor: new Date().toLocaleString('es-CL') },
         { Metrica: "Rango Inicio", Valor: startDate },
@@ -246,7 +277,6 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         { Metrica: "Capacidad Bloques/Box (aprox)", Valor: totalCapacityPerBox }
     ];
 
-    // 2. Hoja de Ocupación por Box
     const occupancySheetData = dataOccupancy.map(d => ({
         Box: d.name,
         'Bloques Ocupados': d.occupied,
@@ -255,9 +285,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         '% Disponibilidad': `${d.freePct}%`
     }));
 
-    // 3. Hoja de Detalle de Reservas
     const detailSheetData = filteredData.map(r => {
-        // Formato de fecha completo para Excel
         const dateObj = new Date(r.startTime);
         const fullDateTime = new Intl.DateTimeFormat('es-CL', {
             timeZone: 'America/Santiago',
@@ -276,15 +304,11 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
         };
     });
 
-    // Crear Libro
     const wb = XLSX.utils.book_new();
-    
-    // Convertir JSON a Hojas
     const wsSummary = XLSX.utils.json_to_sheet(summaryData);
     const wsOccupancy = XLSX.utils.json_to_sheet(occupancySheetData);
     const wsDetail = XLSX.utils.json_to_sheet(detailSheetData);
 
-    // Ajustar anchos de columna básicos
     const colsSummary = [{ wch: 25 }, { wch: 30 }];
     const colsOccupancy = [{ wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }];
     const colsDetail = [{ wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 20 }, { wch: 30 }];
@@ -293,12 +317,10 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
     wsOccupancy['!cols'] = colsOccupancy;
     wsDetail['!cols'] = colsDetail;
 
-    // Agregar Hojas al Libro
     XLSX.utils.book_append_sheet(wb, wsSummary, "Resumen");
     XLSX.utils.book_append_sheet(wb, wsOccupancy, "Ocupación Boxes");
     XLSX.utils.book_append_sheet(wb, wsDetail, "Detalle Reservas");
 
-    // Descargar
     XLSX.writeFile(wb, `Reporte_Gestion_CAE_${startDate}_${endDate}.xlsx`);
   };
 
@@ -388,8 +410,28 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
                     {centers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
             </div>
-            <div className="ml-auto text-xs text-slate-400 self-center">
-                {isLoading ? 'Actualizando datos...' : `Última act: ${new Date().toLocaleTimeString()}`}
+
+            {/* BOTÓN GENERAR ESTADÍSTICAS */}
+            <div className="ml-auto">
+                <button 
+                    onClick={handleGenerateReport}
+                    disabled={isLoading}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:scale-100"
+                >
+                    {isLoading ? (
+                        <>
+                            <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            Calculando...
+                        </>
+                    ) : (
+                        <>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Generar Estadísticas
+                        </>
+                    )}
+                </button>
             </div>
         </div>
 
@@ -465,7 +507,7 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ onClose }) => {
                                 </BarChart>
                             </ResponsiveContainer>
                         ) : (
-                            <div className="h-full flex items-center justify-center text-slate-400">Seleccione un Centro para ver detalles de sus boxes.</div>
+                            <div className="h-full flex items-center justify-center text-slate-400">Seleccione filtros y presione "Generar Estadísticas"</div>
                         )}
                     </div>
                 </div>
