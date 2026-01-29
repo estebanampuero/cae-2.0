@@ -1,0 +1,5 @@
+{
+  "name": "LockedInWork Dashboard",
+  "description": "A comprehensive medical reservation dashboard featuring calendar management, dynamic scheduling grids, and Google Sheets integration.",
+  "requestFramePermissions": []
+}

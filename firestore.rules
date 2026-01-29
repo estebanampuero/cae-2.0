@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function getUserProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isMyOrg(resourceData) {
+      return resourceData.orgId == getUserProfile().orgId;
+    }
+
+    // 1. LISTA BLANCA
+    match /allowlist/{email} {
+      allow read: if isSignedIn();
+      allow write: if false; 
+    }
+
+    // 2. USUARIOS
+    match /users/{userId} {
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow write: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && (
+        request.auth.uid == userId || 
+        resource.data.orgId == getUserProfile().orgId
+      );
+    }
+
+    // 3. ORGANIZACIONES
+    match /organizations/{orgId} {
+      allow create: if isSignedIn();
+      allow read, update: if isSignedIn() && getUserProfile().orgId == orgId;
+    }
+
+    // 4. INVITACIONES
+    match /invitations/{inviteId} {
+      // LEER: Si soy de la org que invita O si la invitación es para mi email
+      allow read: if isSignedIn() && (
+        resource.data.orgId == getUserProfile().orgId ||
+        resource.data.email == request.auth.token.email
+      );
+      
+      // CREAR: Solo miembros de la org pueden crear invitaciones para SU org
+      allow create: if isSignedIn() && 
+        request.resource.data.orgId == getUserProfile().orgId;
+      
+      // BORRAR (Mejorado): 
+      // 1. Si soy el invitado (el email del token coincide con la invitación) -> Al aceptar.
+      // 2. O si soy el dueño de la organización -> Al cancelar.
+      allow delete: if isSignedIn() && (
+        resource.data.email == request.auth.token.email ||
+        resource.data.orgId == getUserProfile().orgId
+      ); 
+    }
+
+    // 5. DATOS DE NEGOCIO (Multi-Tenant Estricto)
+    match /centers/{docId} {
+      allow read: if isSignedIn() && isMyOrg(resource.data);
+      allow create: if isSignedIn() && isMyOrg(request.resource.data);
+      allow update, delete: if isSignedIn() && isMyOrg(resource.data);
+    }
+    match /boxes/{docId} {
+      allow read: if isSignedIn() && isMyOrg(resource.data);
+      allow create: if isSignedIn() && isMyOrg(request.resource.data);
+      allow update, delete: if isSignedIn() && isMyOrg(resource.data);
+    }
+    match /doctors/{docId} {
+      allow read: if isSignedIn() && isMyOrg(resource.data);
+      allow create: if isSignedIn() && isMyOrg(request.resource.data);
+      allow update, delete: if isSignedIn() && isMyOrg(resource.data);
+    }
+    match /reservations/{docId} {
+      allow read: if isSignedIn() && isMyOrg(resource.data);
+      allow create: if isSignedIn() && isMyOrg(request.resource.data);
+      allow update, delete: if isSignedIn() && isMyOrg(resource.data);
+    }
+  }
+}
