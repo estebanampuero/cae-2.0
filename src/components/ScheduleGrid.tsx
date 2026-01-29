@@ -9,10 +9,12 @@ interface ScheduleGridProps {
   onSlotClick: (box: string, time: string) => void;
   // MODIFICADO: Firma actualizada para soportar el Modal de Borrado por Rango
   onDeleteReservation: (info: OccupiedSlotInfo, time: string, boxName: string) => void;
+  // NUEVO: Prop para manejar la edición al hacer clic en el bloque ocupado
+  onEditReservation: (info: OccupiedSlotInfo, time: string, boxName: string) => void;
   getCalendarIdForBox: (box: string) => string | undefined;
   isLoading: boolean;
   activeFilterBox: string;
-  searchTerm: string; // Nueva propiedad para búsqueda
+  searchTerm: string; 
 }
 
 const ScheduleGrid: React.FC<ScheduleGridProps> = ({
@@ -22,6 +24,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
   selectedSlots,
   onSlotClick,
   onDeleteReservation,
+  onEditReservation, // <--- Recibimos la función
   getCalendarIdForBox,
   isLoading,
   activeFilterBox,
@@ -110,13 +113,16 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
               return (
                 <div key={`${box}-${time}`} className="h-16 p-2 border-b border-r border-slate-50 flex items-center justify-center relative group">
                   {occupiedInfo ? (
-                    <div className={`
-                        w-full h-full border rounded-lg px-3 flex flex-col justify-center text-xs relative overflow-hidden transition-all duration-300
+                    <div 
+                        // CLICK EVENT PARA EDITAR
+                        onClick={() => onEditReservation(occupiedInfo, time, box)}
+                        className={`
+                        w-full h-full border rounded-lg px-3 flex flex-col justify-center text-xs relative overflow-hidden transition-all duration-300 cursor-pointer
                         ${isMatch 
                             ? 'bg-yellow-50 border-yellow-400 ring-4 ring-yellow-200/50 z-10 scale-105 shadow-lg' 
                             : isDimmed 
                                 ? 'bg-slate-50 border-slate-100 text-slate-300 opacity-40' 
-                                : 'bg-slate-100 border-slate-200 text-slate-600 hover:shadow-md'
+                                : 'bg-slate-100 border-slate-200 text-slate-600 hover:shadow-md hover:border-indigo-200 hover:bg-indigo-50'
                         }
                     `}>
                       {!isDimmed && <div className={`absolute left-0 top-0 bottom-0 w-1 ${isMatch ? 'bg-yellow-500' : 'bg-slate-400'}`}></div>}
@@ -134,7 +140,7 @@ const ScheduleGrid: React.FC<ScheduleGridProps> = ({
                       <button
                         onClick={(e) => {
                             e.stopPropagation();
-                            // MODIFICADO: Llama a la función del padre (App.tsx) que abre el Modal
+                            // MODIFICADO: Llama a la función del padre (App.tsx) que abre el Modal de Borrado
                             onDeleteReservation(occupiedInfo, time, box);
                         }}
                         className={`absolute top-1 right-1 w-5 h-5 bg-white rounded-full flex items-center justify-center hover:bg-red-500 hover:text-white transition-colors shadow-sm z-20

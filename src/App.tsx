@@ -7,6 +7,7 @@ import AnalyticsPanel from './components/AnalyticsPanel';
 import Login from './components/Login';
 import TeamPanel from './components/TeamPanel';
 import DeleteModal from './components/DeleteModal';
+import ReservationDetailsModal from './components/ReservationDetailsModal'; // <--- 1. IMPORTAR NUEVO MODAL
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { 
   getCenters, 
@@ -17,7 +18,8 @@ import {
   deleteReservationDB,
   mapReservationsToSlots,
   addDoctor,
-  deleteReservationsInRange 
+  deleteReservationsInRange,
+  updateReservationNote // <--- 2. IMPORTAR FUNCIÓN UPDATE
 } from './services/db';
 import { formatToISOWithOffset, getDayName } from './utils/dateUtils';
 import { Center, Box, Doctor, OccupiedSlotInfo } from './types';
@@ -59,9 +61,15 @@ const MainApp: React.FC = () => {
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [isReserving, setIsReserving] = useState(false);
 
-  // --- Delete State ---
+  // --- Modals State ---
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false); // <--- 3. ESTADO VISIBILIDAD MODAL
   const [reservationToDelete, setReservationToDelete] = useState<{info: OccupiedSlotInfo, time: string} | null>(null);
+  
+  // <--- 4. ESTADO PARA RESERVA A EDITAR
+  const [reservationToEdit, setReservationToEdit] = useState<{
+    id: string; doctorName: string; time: string; boxName: string; observation: string; info: OccupiedSlotInfo;
+  } | null>(null);
 
   // --- UI State ---
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -328,6 +336,43 @@ const MainApp: React.FC = () => {
     finally { setIsCheckingAvailability(false); }
   };
 
+  // --- 5. EDIT NOTE LOGIC (NUEVA) ---
+  const handleEditClick = (info: OccupiedSlotInfo, time: string, boxName: string) => {
+    setReservationToEdit({
+      id: info.eventId,
+      doctorName: info.summary,
+      time,
+      boxName,
+      observation: info.observation || '',
+      info
+    });
+    setDetailsModalOpen(true);
+  };
+
+  const handleSaveNote = async (id: string, newNote: string) => {
+    setIsReserving(true); 
+    try {
+      await updateReservationNote(id, newNote);
+      showToast('Nota actualizada correctamente', 'success');
+      setDetailsModalOpen(false);
+      setReservationToEdit(null);
+      fetchAvailabilities(); 
+    } catch (e) {
+      console.error(e);
+      showToast('Error al actualizar nota', 'error');
+    } finally {
+      setIsReserving(false);
+    }
+  };
+
+  // Función puente para borrar desde el modal de edición
+  const handleDeleteFromEditModal = () => {
+    if (reservationToEdit) {
+      setDetailsModalOpen(false);
+      handleDeleteClick(reservationToEdit.info, reservationToEdit.time);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-700 font-sans pb-24 relative overflow-hidden">
       {/* Background Gradient */}
@@ -524,6 +569,7 @@ const MainApp: React.FC = () => {
                                     selectedSlots={selectedTimeSlots}
                                     onSlotClick={handleSlotClick}
                                     onDeleteReservation={handleDeleteClick} 
+                                    onEditReservation={handleEditClick} // <--- 5. CONECTAR HANDLER DE EDICIÓN
                                     getCalendarIdForBox={() => ''} 
                                     isLoading={isCheckingAvailability}
                                     activeFilterBox={selectedFilterBox}
@@ -639,6 +685,16 @@ const MainApp: React.FC = () => {
             doctorName={reservationToDelete?.info.summary || ''}
             time={reservationToDelete?.time || ''}
             isProcessing={isCheckingAvailability}
+        />
+
+        {/* 6. RENDERIZAR NUEVO MODAL DE EDICIÓN */}
+        <ReservationDetailsModal 
+            isOpen={detailsModalOpen}
+            onClose={() => setDetailsModalOpen(false)}
+            onSave={handleSaveNote}
+            onDelete={handleDeleteFromEditModal}
+            data={reservationToEdit}
+            isProcessing={isReserving}
         />
       </div>
     </div>

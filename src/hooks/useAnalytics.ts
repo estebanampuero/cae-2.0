@@ -3,11 +3,10 @@ import { Reservation, Box } from '../types';
 
 export type Granularity = 'day' | 'week' | 'month';
 
-// 1. Modificamos la interfaz para incluir 'isOpen'
 export interface DayConfig {
   start: number;
   end: number;
-  isOpen: boolean; // <--- Nuevo campo
+  isOpen: boolean;
 }
 
 export interface BusinessHours {
@@ -22,54 +21,78 @@ export const useAnalytics = (
   allBoxes: Box[], 
   startDate: string, 
   endDate: string,
-  businessHours: BusinessHours
+  businessHours: BusinessHours,
+  selectedBoxId: string // <--- NUEVO PARÁMETRO
 ) => {
 
+  // 1. Filtrado Preliminar por Box y Separación de Status
   const { activeData, cancelledData } = useMemo(() => {
     const active: Reservation[] = [];
     const cancelled: Reservation[] = [];
     
     rawData.forEach(r => {
-      if (r.status === 'cancelled') cancelled.push(r);
-      else active.push(r);
+      // FILTRO POR BOX: Si no es 'all' y no coincide, ignorar registro
+      if (selectedBoxId !== 'all' && r.boxId !== selectedBoxId) {
+        return;
+      }
+
+      // Separar por estado (asumiendo que status 'cancelled' existe en tu DB)
+      // Si usas soft-delete o un campo booleano, ajusta esta condición.
+      if (r.status === 'cancelled') {
+        cancelled.push(r);
+      } else {
+        active.push(r);
+      }
     });
     return { activeData: active, cancelledData: cancelled };
-  }, [rawData]);
+  }, [rawData, selectedBoxId]); // Recalcular si cambia la data o el box seleccionado
 
-  // 2. Cálculo de Capacidad con el filtro de 'isOpen'
-  const totalCapacityPerBox = useMemo(() => {
-    let totalSlots = 0;
+  // 2. Cálculo de Tasa de Cancelación (Fórmula solicitada)
+  const cancellationRate = useMemo(() => {
+    const totalReservas = activeData.length + cancelledData.length;
+    if (totalReservas === 0) return "0.0";
+    
+    // (Horas Canceladas / Horas Totales) * 100
+    // En tu sistema de bloques fijos, contar reservas es equivalente a contar horas.
+    return ((cancelledData.length / totalReservas) * 100).toFixed(1);
+  }, [activeData, cancelledData]);
+
+  // 3. Cálculo de Capacidad Dinámica (Ajustado por Box seleccionado)
+  const totalCapacity = useMemo(() => {
+    let totalSlotsPerBox = 0;
     const current = new Date(`${startDate}T00:00:00`);
     const end = new Date(`${endDate}T00:00:00`);
 
     if (isNaN(current.getTime()) || isNaN(end.getTime())) return 0;
 
     const tempDate = new Date(current);
-    
-    // Bucle de seguridad (evitar loops infinitos si las fechas están mal)
     let safety = 0;
+    
     while (tempDate <= end && safety < 1000) {
-      const day = tempDate.getDay(); // 0=Dom, 1=Lun...
+      const day = tempDate.getDay();
       let config: DayConfig | null = null;
 
-      // Seleccionar configuración según el día
       if (day >= 1 && day <= 4) config = businessHours.weekdays;
       else if (day === 5) config = businessHours.friday;
       else if (day === 6) config = businessHours.saturday;
       else config = businessHours.sunday;
 
-      // LA LÓGICA CLAVE: Solo sumar si está configurado como "Abierto"
       if (config && config.isOpen) {
         const hours = config.end - config.start;
-        if (hours > 0) totalSlots += Math.floor(hours * 2); // Bloques de 30 min
+        if (hours > 0) totalSlotsPerBox += Math.floor(hours * 2); 
       }
-
       tempDate.setDate(tempDate.getDate() + 1);
       safety++;
     }
-    return totalSlots;
-  }, [startDate, endDate, businessHours]);
 
+    // Si seleccionó un Box específico, la capacidad es esa.
+    // Si seleccionó 'all', la capacidad es la suma de todos los boxes disponibles.
+    const numberOfBoxes = selectedBoxId !== 'all' ? 1 : allBoxes.length;
+    
+    return totalSlotsPerBox * numberOfBoxes;
+  }, [startDate, endDate, businessHours, allBoxes.length, selectedBoxId]);
+
+  // 4. Timeline
   const getTimelineData = useCallback((granularity: Granularity) => {
     const map: Record<string, number> = {};
     
@@ -95,33 +118,41 @@ export const useAnalytics = (
       .map(([date, value]) => ({ date, reservas: value }));
   }, [activeData]);
 
+  // 5. Ocupación por Box (Solo relevante si vemos todos, pero útil para comparar)
   const occupancyData = useMemo(() => {
+    // Si hay un box seleccionado, solo mostramos ese box en el gráfico vertical
+    const boxesToAnalyze = selectedBoxId !== 'all' 
+      ? allBoxes.filter(b => b.id === selectedBoxId) 
+      : allBoxes;
+
     const usageMap: Record<string, number> = {};
-    allBoxes.forEach(b => { usageMap[b.name] = 0; });
+    boxesToAnalyze.forEach(b => { usageMap[b.name] = 0; });
 
     activeData.forEach(r => {
       if (usageMap[r.boxName] !== undefined) usageMap[r.boxName]++;
     });
 
+    // Capacidad individual por box (para el gráfico de barras comparativo)
+    const singleBoxCapacity = totalCapacity / (selectedBoxId !== 'all' ? 1 : allBoxes.length);
+
     return Object.entries(usageMap).map(([boxName, occupiedCount]) => {
-      const capacity = totalCapacityPerBox > 0 ? totalCapacityPerBox : 1; // Evitar división por cero
-      
-      // Si la capacidad es 0 (ej: rango de fechas donde está todo cerrado), ocupación es 0
-      const occupiedPct = totalCapacityPerBox === 0 ? 0 : parseFloat(((occupiedCount / capacity) * 100).toFixed(1));
+        const cap = singleBoxCapacity > 0 ? singleBoxCapacity : 1;
+        const occupiedPct = singleBoxCapacity === 0 ? 0 : parseFloat(((occupiedCount / cap) * 100).toFixed(1));
       
       return {
         name: boxName,
         occupied: occupiedCount,
-        capacity: capacity,
+        capacity: cap,
         occupiedPct: occupiedPct > 100 ? 100 : occupiedPct
       };
     }).sort((a, b) => b.occupiedPct - a.occupiedPct);
-  }, [allBoxes, activeData, totalCapacityPerBox]);
+  }, [allBoxes, activeData, totalCapacity, selectedBoxId]);
 
   return {
     activeData,
     cancelledData,
-    totalCapacityPerBox,
+    cancellationRate, // <--- EXPORTADO
+    totalCapacity,
     getTimelineData,
     occupancyData
   };

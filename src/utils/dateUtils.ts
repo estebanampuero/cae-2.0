@@ -1,55 +1,72 @@
-// --- UTILS PARA CHILE ---
+// Define explícitamente la zona horaria de Chile para evitar inconsistencias
+const CHILE_TZ = 'America/Santiago';
 
-// Obtiene el offset manual (para guardar)
-export const getSantiagoOffset = (date: Date): string => {
+/**
+ * Genera un ISO String (ej: "2024-05-20T08:00:00.000-04:00") 
+ * combinando una fecha base y una hora (ej: "08:00"), 
+ * calculando el OFFSET correcto para ESE día específico en Chile (Invierno vs Verano).
+ */
+export const formatToISOWithOffset = (date: Date, timeStr: string): string => {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  
   const year = date.getFullYear();
-  // Lógica aproximada cambio de hora Chile (Primer Sábado Abril / Septiembre)
-  const firstOfSep = new Date(year, 8, 1);
-  const firstSaturdaySep = new Date(firstOfSep);
-  firstSaturdaySep.setDate(1 + (6 - firstOfSep.getDay() + 7) % 7);
-  firstSaturdaySep.setHours(23, 59, 59);
+  const month = date.getMonth();
+  const day = date.getDate();
 
-  const firstOfApr = new Date(year, 3, 1);
-  const firstSaturdayApr = new Date(firstOfApr);
-  firstSaturdayApr.setDate(1 + (6 - firstOfApr.getDay() + 7) % 7);
-  firstSaturdayApr.setHours(23, 59, 59);
-
-  return date >= firstSaturdaySep || date < firstSaturdayApr ? '-03:00' : '-04:00';
+  // Creamos la fecha usando el constructor local.
+  // JS usará la configuración regional del sistema para asignar el offset correcto (GMT-3 o GMT-4)
+  // según la fecha histórica (Enero vs Julio).
+  const targetDate = new Date(year, month, day, hours, minutes, 0, 0);
+  
+  return toLocalISOString(targetDate);
 };
 
-export const formatToISOWithOffset = (date: Date, time: string): string => {
-  const [hours, minutes] = time.split(':');
-  const dateWithTime = new Date(date);
-  dateWithTime.setHours(parseInt(hours), parseInt(minutes), 0, 0);
-  
-  const year = dateWithTime.getFullYear();
-  const month = String(dateWithTime.getMonth() + 1).padStart(2, '0');
-  const day = String(dateWithTime.getDate()).padStart(2, '0');
-  
-  const offset = getSantiagoOffset(dateWithTime);
-  
-  // Guardamos con el offset explícito para que Firebase lo entienda bien
-  return `${year}-${month}-${day}T${time}:00${offset}`;
+/**
+ * Helper interno para convertir una fecha a formato ISO preservando 
+ * la zona horaria y offset local (en lugar de convertir a UTC Z).
+ */
+const toLocalISOString = (date: Date): string => {
+  const tzo = -date.getTimezoneOffset();
+  const dif = tzo >= 0 ? '+' : '-';
+  const pad = (num: number) => (num < 10 ? '0' : '') + num;
+
+  return date.getFullYear() +
+    '-' + pad(date.getMonth() + 1) +
+    '-' + pad(date.getDate()) +
+    'T' + pad(date.getHours()) +
+    ':' + pad(date.getMinutes()) +
+    ':' + pad(date.getSeconds()) +
+    dif + pad(Math.floor(Math.abs(tzo) / 60)) +
+    ':' + pad(Math.abs(tzo) % 60);
 };
 
 export const getMonthName = (date: Date): string => {
-  return date.toLocaleDateString("es-ES", { month: "long", year: "numeric" }).replace(/^\w/, (c) => c.toUpperCase());
+  return new Intl.DateTimeFormat('es-CL', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: CHILE_TZ
+  }).format(date).replace(/^\w/, (c) => c.toUpperCase());
 };
 
 export const getDayName = (date: Date): string => {
-  return date.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+  return new Intl.DateTimeFormat('es-CL', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    timeZone: CHILE_TZ
+  }).format(date);
 };
 
-// --- NUEVA FUNCIÓN CLAVE ---
-// Toma cualquier string ISO (UTC o Offset) y devuelve la hora HH:mm en Chile
+/**
+ * Toma cualquier string ISO (UTC o con Offset) y devuelve la hora HH:mm en Chile
+ * ajustada automáticamente al horario de esa fecha.
+ */
 export const getChileTime = (isoString: string): string => {
   if (!isoString) return '';
   const date = new Date(isoString);
   
-  // Usamos Intl nativo para forzar la zona horaria de Chile
-  // Esto maneja automáticamente el cambio de hora (invierno/verano)
   return new Intl.DateTimeFormat('es-CL', {
-    timeZone: 'America/Santiago',
+    timeZone: CHILE_TZ,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false

@@ -68,21 +68,34 @@ export const getReservationsForDate = async (orgId: string, centerId: string, da
   );
 };
 
+// --- OPTIMIZACIÓN: Filtrado directo en BD por rango de fechas ---
 export const getReservationsInRange = async (orgId: string, start: Date, end: Date, centerId?: string): Promise<Reservation[]> => {
     if (!orgId) return [];
-    let constraints = [where('orgId', '==', orgId)];
-    if (centerId) constraints.push(where('centerId', '==', centerId));
-    const q = query(collection(db, 'reservations'), ...constraints);
-    const snapshot = await getDocs(q);
-    const reservations = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Reservation));
     
-    const startIso = start.toISOString();
-    const endAdjusted = new Date(end);
-    endAdjusted.setHours(23, 59, 59, 999);
-    const endIso = endAdjusted.toISOString();
+    // Generamos strings simples YYYY-MM-DD para usarlos como límites
+    const startStr = start.toISOString().split('T')[0];
+    
+    // Para el final, sumamos 1 día para asegurar que incluimos todo el día final
+    const endObj = new Date(end);
+    endObj.setDate(endObj.getDate() + 1);
+    const endStr = endObj.toISOString().split('T')[0];
 
-    // AQUÍ DEVOLVEMOS TODO (Activas y Canceladas) para que Analytics haga el cálculo
-    return reservations.filter(r => r.startTime >= startIso && r.startTime <= endIso);
+    // Construimos la query OPTIMIZADA
+    let constraints = [
+      where('orgId', '==', orgId),
+      where('startTime', '>=', startStr), // Trae desde la fecha inicio...
+      where('startTime', '<', endStr)     // ...hasta antes del día siguiente al fin
+    ];
+    
+    if (centerId) {
+      constraints.push(where('centerId', '==', centerId));
+    }
+    
+    const q = query(collection(db, 'reservations'), ...constraints);
+    
+    // Esta llamada ahora descarga SOLO los datos necesarios
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Reservation));
 };
 
 export const createReservationDB = async (res: Omit<Reservation, 'id' | 'createdAt'>) => {
@@ -124,7 +137,7 @@ export const deleteReservationsInRange = async (
         where('centerId', '==', centerId),
         where('boxId', '==', boxId),
         where('doctorName', '==', doctorName),
-        where('status', '!=', 'cancelled') // Solo buscar las que están activas (requiere indice simple, usually auto)
+        where('status', '!=', 'cancelled') // Solo buscar las que están activas
     );
 
     const snapshot = await getDocs(q);
@@ -150,6 +163,20 @@ export const deleteReservationsInRange = async (
         await batch.commit();
     }
     return count;
+};
+
+// --- UPDATE RESERVATION NOTE (NUEVO) ---
+export const updateReservationNote = async (reservationId: string, newObservation: string) => {
+  try {
+    const reservationRef = doc(db, 'reservations', reservationId);
+    await updateDoc(reservationRef, {
+      observation: newObservation
+    });
+    console.log("Nota actualizada correctamente");
+  } catch (e) {
+    console.error("Error actualizando nota: ", e);
+    throw e;
+  }
 };
 
 export const mapReservationsToSlots = (reservations: Reservation[]): Map<string, Record<string, OccupiedSlotInfo>> => {
